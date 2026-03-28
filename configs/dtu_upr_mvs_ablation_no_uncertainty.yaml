@@ -1,0 +1,109 @@
+model:
+  backbone:
+    name: resnet34
+    out_channels: 128
+    pretrained: false
+    use_checkpoint: false
+
+  coarse:
+    feat_key: stage2
+    depth_bins_train: 48
+    depth_bins_test: 96
+    base_channels: 8
+    use_checkpoint: true
+
+  point:
+    num_points: 12000
+    use_all_if_fewer: true
+    use_gt_mask_for_sampling: true
+    feat_dim: 160
+    lift_stage_keys: [stage1, stage2, stage3]
+    knn: 16
+    candidate_k: 64
+    edgeconv_layers: [128, 192, 256]
+    delta_scale: 0.01
+    use_checkpoint: true
+    predict_uncertainty: false
+
+  densify:
+    enable: true
+    tau_sigma: 0.15
+    tau_alpha: 0.6
+    use_sigma_gate: false
+    split_factor: 2
+    offset_scale: 0.35
+    max_new_points: 12000
+    final_knn: 16
+    final_candidate_k: 64
+
+data:
+  dataset: dtu
+  train_root: /scr/user/qinglong/dataset/DTU/dtu_training
+  val_root: /scr/user/qinglong/dataset/DTU/dtu_training
+  test_root: /scr/user/qinglong/dataset/DTU/dtu_test
+  test_gt_root: /scr/user/qinglong/dataset/DTU/dtu_training
+  train_layout: trainval
+  val_layout: trainval
+  test_layout: dtu_test
+  train_list: lists/dtu/train.txt
+  val_list: lists/dtu/val.txt
+  test_list: lists/dtu/test.txt
+  pair_file: Cameras/pair.txt
+  camera_dir: Cameras
+  rectified_dir: DTU_origin/Rectified
+  depth_dir: Depths_raw
+  mask_dir: Depths_raw
+  test_image_dir: images
+  test_camera_dirs: [cams_1, cams]
+  test_pair_file: pair.txt
+  img_h: 512
+  img_w: 640
+  n_views: 5
+  train_light_ids: [0, 1, 2, 3, 4, 5, 6]
+  eval_light_ids: [3]
+  depth_scale: 1.0
+
+train:
+  stage: point_refine
+  epochs: 14
+  batch_size_per_gpu: 2
+  batch_size_point_per_gpu: 1
+  batch_size_joint_per_gpu: 1
+  num_workers: 8
+  grad_accum_steps: 1
+  grad_clip: 5.0
+  amp_dtype: bf16
+  seed: 42
+  log_interval: 20
+  val_interval: 1
+  save_interval: 1
+  monitor_key: auto
+
+optim:
+  name: adamw
+  lr_backbone: 0.0001
+  lr_coarse: 0.0002
+  lr_point: 0.0004
+  joint_coarse_lr_scale: 0.2
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  min_lr: 1.0e-6
+
+loss:
+  coarse_weight: 1.0
+  chamfer_weight: 1.0
+  uncertainty_weight: 0.0
+  feature_weight: 0.5
+  repulsion_weight: 0.05
+  repulsion_radius: 0.01
+  alpha_weight: 0.2
+  alpha_error_threshold: 2.0
+  feature_stage: stage2
+
+ddp:
+  backend: nccl
+  find_unused_parameters: false
+  broadcast_buffers: false
