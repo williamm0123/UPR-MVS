@@ -19,8 +19,8 @@ from upr_mvs.datasets.dtu import build_dtu_dataset
 from upr_mvs.engine.checkpoint_io import load_checkpoint, resolve_resume_path
 from upr_mvs.engine.ddp_utils import move_to_device
 from upr_mvs.engine.trainer import configure_trainable_modules
-from upr_mvs.models.coarse.coarse_depth_head import CoarseDepthStageModel
 from upr_mvs.models.upr_mvs import UPRMVSModel
+from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
 from upr_mvs.utils.pointcloud import filter_valid_points, write_ply_ascii
 
 
@@ -48,9 +48,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def build_model(config: dict[str, Any]) -> torch.nn.Module:
-    train_stage = str(config.get("train", {}).get("stage", "coarse_only")).lower()
-    if train_stage == "coarse_only":
-        return CoarseDepthStageModel(backbone_cfg=config["model"]["backbone"], coarse_cfg=config["model"]["coarse"])
+    backbone = str(config["model"].get("backbone", "dinov3")).lower()
+    if backbone == "dinov3":
+        return UPRMVSTransformerModel(model_cfg=config["model"])
     return UPRMVSModel(model_cfg=config["model"])
 
 

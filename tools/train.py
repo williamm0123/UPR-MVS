@@ -27,9 +27,9 @@ from upr_mvs.engine.trainer import (
     build_scheduler,
     configure_trainable_modules,
 )
-from upr_mvs.models.coarse.coarse_depth_head import CoarseDepthStageModel
 from upr_mvs.models.losses import UPRMVSLoss
 from upr_mvs.models.upr_mvs import UPRMVSModel
+from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
 from upr_mvs.utils.metrics import format_metrics
 
 
@@ -70,12 +70,9 @@ def set_seed(seed: int, rank: int) -> None:
 
 def build_model(config: dict[str, Any]) -> nn.Module:
     model_cfg = config["model"]
-    train_stage = str(config.get("train", {}).get("stage", "coarse_only")).lower()
-    if train_stage == "coarse_only":
-        return CoarseDepthStageModel(
-            backbone_cfg=model_cfg["backbone"],
-            coarse_cfg=model_cfg["coarse"],
-        )
+    backbone = str(model_cfg.get("backbone", "dinov3")).lower()
+    if backbone == "dinov3":
+        return UPRMVSTransformerModel(model_cfg=model_cfg)
     return UPRMVSModel(model_cfg=model_cfg)
 
 
@@ -125,8 +122,10 @@ def main() -> None:
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    use_ddp = bool(config.get("train", {}).get("use_ddp", False))
+    launcher = args.launcher if use_ddp else "none"
     ddp_cfg = init_distributed_mode(
-        launcher=args.launcher,
+        launcher=launcher,
         backend=str(config.get("ddp", {}).get("backend", "nccl")),
     )
     set_seed(int(config["train"].get("seed", 42)), ddp_cfg.rank)

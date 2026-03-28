@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from upr_mvs.models.coarse.cost_volume import scale_intrinsics
+from upr_mvs.models.transformer.utils import scale_intrinsics
 from upr_mvs.models.point.unproject import depth_to_world_points, gather_by_index
 
 

@@ -1,6 +1,6 @@
 """Model modules for UPR-MVS."""
 
-from .coarse.coarse_depth_head import CoarseDepthStageModel
 from .upr_mvs import UPRMVSModel
+from .upr_mvs_transformer import UPRMVSTransformerModel
 
-__all__ = ["CoarseDepthStageModel", "UPRMVSModel"]
+__all__ = ["UPRMVSModel", "UPRMVSTransformerModel"]
