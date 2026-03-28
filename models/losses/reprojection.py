@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from upr_mvs.models.transformer.utils import scale_intrinsics
-from upr_mvs.models.losses.consistency import masked_mean
-from upr_mvs.models.point.feature_lifting import project_world_to_view, sample_feature_map
+from models.transformer.utils import scale_intrinsics
+from models.losses.consistency import masked_mean
+from models.point.feature_lifting import project_world_to_view, sample_feature_map
 
 
 def sparse_feature_consistency_loss(
