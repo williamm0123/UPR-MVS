@@ -71,6 +71,11 @@ def set_seed(seed: int, rank: int) -> None:
 def build_model(config: dict[str, Any]) -> nn.Module:
     model_cfg = config["model"]
     backbone = str(model_cfg.get("backbone", "dinov3")).lower()
+    supported_backbones = {"dinov3", "upr_mvs_legacy"}
+    if backbone not in supported_backbones:
+        raise ValueError(
+            f"Unsupported model.backbone='{backbone}'. Supported values: {sorted(supported_backbones)}"
+        )
     if backbone == "dinov3":
         return UPRMVSTransformerModel(model_cfg=model_cfg)
     return UPRMVSModel(model_cfg=model_cfg)
@@ -111,9 +116,14 @@ def resolve_resume_mode(resume_path: str, work_dir: Path, requested_mode: str) -
         return requested_mode
     if not resume_path:
         return "full"
+
     resume_parent = Path(resume_path).resolve().parent
-    work_parent = work_dir.resolve()
-    return "full" if resume_parent == work_parent else "model_only"
+    work_root = work_dir.resolve()
+    try:
+        in_work_tree = resume_parent.is_relative_to(work_root)
+    except AttributeError:
+        in_work_tree = str(resume_parent).startswith(str(work_root))
+    return "full" if in_work_tree else "model_only"
 
 
 def main() -> None:
