@@ -20,10 +20,10 @@ from upr_mvs.datasets.dtu import build_dtu_dataset
 from upr_mvs.engine.checkpoint_io import load_checkpoint, resolve_resume_path
 from upr_mvs.engine.ddp_utils import cleanup_distributed, init_distributed_mode, is_main_process, move_to_device, reduce_dict, synchronize
 from upr_mvs.engine.trainer import autocast_context, configure_trainable_modules
-from upr_mvs.models.coarse.coarse_depth_head import CoarseDepthStageModel
 from upr_mvs.models.losses import UPRMVSLoss
 from upr_mvs.models.losses.consistency import build_sparse_gt_points
 from upr_mvs.models.upr_mvs import UPRMVSModel
+from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
 from upr_mvs.utils.metrics import ScalarMeter, format_metrics, sparse_point_cloud_metrics, tensor_dict_to_floats
 
 
@@ -56,9 +56,9 @@ def set_seed(seed: int, rank: int) -> None:
 
 
 def build_model(config: dict[str, Any]) -> torch.nn.Module:
-    train_stage = str(config.get("train", {}).get("stage", "coarse_only")).lower()
-    if train_stage == "coarse_only":
-        return CoarseDepthStageModel(backbone_cfg=config["model"]["backbone"], coarse_cfg=config["model"]["coarse"])
+    backbone = str(config["model"].get("backbone", "dinov3")).lower()
+    if backbone == "dinov3":
+        return UPRMVSTransformerModel(model_cfg=config["model"])
     return UPRMVSModel(model_cfg=config["model"])
 
 
@@ -121,8 +121,10 @@ def main() -> None:
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    use_ddp = bool(config.get("train", {}).get("use_ddp", False))
+    launcher = args.launcher if use_ddp else "none"
     ddp_cfg = init_distributed_mode(
-        launcher=args.launcher,
+        launcher=launcher,
         backend=str(config.get("ddp", {}).get("backend", "nccl")),
     )
     set_seed(int(config["train"].get("seed", 42)), ddp_cfg.rank)

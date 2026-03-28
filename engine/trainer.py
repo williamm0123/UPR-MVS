@@ -10,8 +10,8 @@ from torch import Tensor, nn
 
 from upr_mvs.engine.checkpoint_io import save_checkpoint
 from upr_mvs.engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwrap_model
-from upr_mvs.models.coarse.coarse_depth_head import CoarseDepthStageModel
 from upr_mvs.models.upr_mvs import UPRMVSModel
+from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
 from upr_mvs.utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
 
 
@@ -22,20 +22,17 @@ def set_requires_grad(module: nn.Module, enabled: bool) -> None:
 
 def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
     model_unwrapped = unwrap_model(model)
-    if isinstance(model_unwrapped, CoarseDepthStageModel):
-        return
-
-    if not isinstance(model_unwrapped, UPRMVSModel):
+    if not isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
         return
 
     set_requires_grad(model_unwrapped.backbone, True)
-    set_requires_grad(model_unwrapped.coarse_head, True)
+    set_requires_grad(model_unwrapped.cvt, True)
     set_requires_grad(model_unwrapped.feature_lifter, True)
     set_requires_grad(model_unwrapped.point_refiner, True)
 
     if train_stage == "point_refine":
         set_requires_grad(model_unwrapped.backbone, False)
-        set_requires_grad(model_unwrapped.coarse_head, False)
+        set_requires_grad(model_unwrapped.cvt, False)
 
 
 def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
@@ -49,17 +46,10 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
         return [parameter for parameter in module.parameters() if parameter.requires_grad]
 
     param_groups: list[dict[str, Any]] = []
-    if isinstance(model_unwrapped, CoarseDepthStageModel):
-        backbone_params = collect_params(model_unwrapped.backbone)
-        coarse_params = collect_params(model_unwrapped.coarse_head)
-        if backbone_params:
-            param_groups.append({"params": backbone_params, "lr": float(optim_cfg.get("lr_backbone", 1.0e-4))})
-        if coarse_params:
-            param_groups.append({"params": coarse_params, "lr": float(optim_cfg.get("lr_coarse", 2.0e-4))})
-    elif isinstance(model_unwrapped, UPRMVSModel):
+    if isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
         coarse_scale = float(optim_cfg.get("joint_coarse_lr_scale", 0.2)) if train_stage == "joint" else 1.0
         backbone_params = collect_params(model_unwrapped.backbone)
-        coarse_params = collect_params(model_unwrapped.coarse_head)
+        coarse_params = collect_params(model_unwrapped.cvt)
         point_params = collect_params(model_unwrapped.feature_lifter) + collect_params(model_unwrapped.point_refiner)
         if backbone_params:
             param_groups.append({"params": backbone_params, "lr": float(optim_cfg.get("lr_backbone", 1.0e-4))})
