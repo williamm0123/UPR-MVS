@@ -195,15 +195,20 @@ class DinoV3Backbone(nn.Module):
             return tokens
 
         total_tokens = tokens.shape[1]
-        tokens_by_view = tokens.reshape(batch_size, num_views, total_tokens, self.embed_dim).clone()
-        patch_tokens = tokens_by_view[:, :, self.token_offset :, :]
-        ref_tokens = patch_tokens[:, 0]
-        src_tokens = patch_tokens[:, 1:].reshape(batch_size, -1, self.embed_dim)
+        tokens_by_view = tokens.reshape(batch_size, num_views, total_tokens, self.embed_dim)
+        ref_prefix = tokens_by_view[:, 0, : self.token_offset, :]
+        ref_tokens = tokens_by_view[:, 0, self.token_offset :, :]
+        src_tokens = tokens_by_view[:, 1:, self.token_offset :, :].reshape(batch_size, -1, self.embed_dim)
         if src_tokens.shape[1] == 0:
             return tokens
 
-        tokens_by_view[:, 0, self.token_offset :, :] = self.sva[str(block_index)](ref_tokens, src_tokens)
-        return tokens_by_view.reshape(batch_size * num_views, total_tokens, self.embed_dim)
+        updated_ref_tokens = self.sva[str(block_index)](ref_tokens, src_tokens)
+        updated_ref_view = torch.cat([ref_prefix, updated_ref_tokens], dim=1)
+        if num_views == 2:
+            updated_tokens_by_view = torch.stack([updated_ref_view, tokens_by_view[:, 1]], dim=1)
+        else:
+            updated_tokens_by_view = torch.cat([updated_ref_view.unsqueeze(1), tokens_by_view[:, 1:]], dim=1)
+        return updated_tokens_by_view.reshape(batch_size * num_views, total_tokens, self.embed_dim)
 
     def _project_stage(self, stage_key: str, fmap: Tensor, image_hw: tuple[int, int]) -> Tensor:
         image_h, image_w = image_hw

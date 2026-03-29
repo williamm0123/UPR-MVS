@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 # Local experiments
-dtu_upr_mvs_transformer_local_smoke.yaml
+dtu_upr_mvs_transformer_local.yaml
 local_smoke_train.txt
 local_smoke_val.txt
 local_smoke_run/
