@@ -48,6 +48,7 @@ class SelfAttentionBlock(nn.Module):
         attn_class: Callable[..., nn.Module] = SelfAttention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
         mask_k_bias: bool = False,
+        attention_backend: str = "auto",
         device=None,
     ) -> None:
         super().__init__()
@@ -61,6 +62,7 @@ class SelfAttentionBlock(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             mask_k_bias=mask_k_bias,
+            attention_backend=attention_backend,
             device=device,
         )
         self.ls1 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
@@ -235,6 +237,7 @@ class CausalSelfAttentionBlock(nn.Module):
         act_layer: Callable = nn.GELU,
         norm_layer: Callable = nn.LayerNorm,
         dropout_prob: float = 0.0,
+        attention_backend: str = "auto",
     ):
         super().__init__()
 
@@ -242,7 +245,13 @@ class CausalSelfAttentionBlock(nn.Module):
         self.is_causal = is_causal
         self.ls1 = LayerScale(dim, init_values=ls_init_value) if ls_init_value else nn.Identity()
         self.attention_norm = norm_layer(dim)
-        self.attention = CausalSelfAttention(dim, num_heads, attn_drop=dropout_prob, proj_drop=dropout_prob)
+        self.attention = CausalSelfAttention(
+            dim,
+            num_heads,
+            attn_drop=dropout_prob,
+            proj_drop=dropout_prob,
+            attention_backend=attention_backend,
+        )
 
         self.ffn_norm = norm_layer(dim)
         ffn_hidden_dim = int(dim * ffn_ratio)

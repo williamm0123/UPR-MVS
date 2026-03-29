@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
+from .attention_backend import attention_forward, normalize_attention_backend
 from .positional_encoding import AdaptiveAttentionScaling, FrustoconicalPositionalEncoding3D
 from .utils import (
     group_wise_correlation,
@@ -17,11 +18,48 @@ from .utils import (
 )
 
 
+class MultiheadSelfAttention(nn.Module):
+    def __init__(self, dim: int, nhead: int, dropout: float = 0.0, attention_backend: str = "auto") -> None:
+        super().__init__()
+        if dim % nhead != 0:
+            raise ValueError(f"Expected dim divisible by nhead, got dim={dim}, nhead={nhead}")
+        self.num_heads = nhead
+        self.head_dim = dim // nhead
+        self.backend = normalize_attention_backend(attention_backend)
+        self.qkv = nn.Linear(dim, dim * 3)
+        self.attn_drop = nn.Dropout(dropout)
+        self.out_proj = nn.Linear(dim, dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size, num_tokens, dim = x.shape
+        qkv = self.qkv(x).reshape(batch_size, num_tokens, 3, self.num_heads, self.head_dim)
+        q, k, v = torch.unbind(qkv, dim=2)
+        q, k, v = [t.transpose(1, 2) for t in (q, k, v)]
+        attn_out = attention_forward(
+            q,
+            k,
+            v,
+            backend=self.backend,
+            dropout_p=self.attn_drop.p,
+            training=self.training,
+        )
+        attn_out = attn_out.transpose(1, 2).reshape(batch_size, num_tokens, dim)
+        return self.out_proj(attn_out)
+
+
 class CVTransformerBlock(nn.Module):
-    def __init__(self, dim: int, nhead: int, mlp_ratio: float = 4.0, dropout: float = 0.0, aas_enable: bool = True) -> None:
+    def __init__(
+        self,
+        dim: int,
+        nhead: int,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+        aas_enable: bool = True,
+        attention_backend: str = "auto",
+    ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, nhead, dropout=dropout, batch_first=True)
+        self.attn = MultiheadSelfAttention(dim, nhead, dropout=dropout, attention_backend=attention_backend)
         self.aas = AdaptiveAttentionScaling(1.0) if aas_enable else nn.Identity()
         self.norm2 = nn.LayerNorm(dim)
         hidden = int(dim * mlp_ratio)
@@ -29,7 +67,7 @@ class CVTransformerBlock(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         h = self.norm1(x)
-        a, _ = self.attn(h, h, h, need_weights=False)
+        a = self.attn(h)
         x = x + self.aas(a)
         x = x + self.mlp(self.norm2(x))
         return x
@@ -48,6 +86,7 @@ class CostVolumeTransformer(nn.Module):
         fpe_enable: bool = True,
         use_checkpoint: bool = False,
         share_across_scales: bool = False,
+        attention_backend: str = "auto",
     ) -> None:
         super().__init__()
         self.d_bins = d_bins
@@ -60,7 +99,15 @@ class CostVolumeTransformer(nn.Module):
 
         def build_stack() -> nn.ModuleList:
             return nn.ModuleList(
-                [CVTransformerBlock(feature_dim, nhead=nhead, aas_enable=aas_enable) for _ in range(num_layers)]
+                [
+                    CVTransformerBlock(
+                        feature_dim,
+                        nhead=nhead,
+                        aas_enable=aas_enable,
+                        attention_backend=attention_backend,
+                    )
+                    for _ in range(num_layers)
+                ]
             )
 
         self.blocks = build_stack()

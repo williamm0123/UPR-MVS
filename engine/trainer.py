@@ -4,9 +4,15 @@ from contextlib import nullcontext
 from pathlib import Path
 import time
 from typing import Any
+import warnings
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:  # pragma: no cover - optional runtime dependency
+    SummaryWriter = None
 
 from engine.checkpoint_io import save_checkpoint
 from engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwrap_model
@@ -124,6 +130,88 @@ class UPRMVSTrainer:
         default_monitor_key = "depth_abs_error" if str(train_cfg.get("stage", "coarse_only")).lower() == "coarse_only" else "point_abs_error"
         monitor_key = str(train_cfg.get("monitor_key", "auto"))
         self.monitor_key = default_monitor_key if monitor_key == "auto" else monitor_key
+        self.global_step = 0
+
+        tensorboard_cfg = train_cfg.get("tensorboard", {}) if isinstance(train_cfg.get("tensorboard", {}), dict) else {}
+        self.tb_enabled = bool(tensorboard_cfg.get("enable", True))
+        self.tb_scalar_interval = int(tensorboard_cfg.get("scalar_interval", train_cfg.get("log_interval", 20)))
+        self.tb_image_interval = int(tensorboard_cfg.get("image_interval", 200))
+        self.tb_feature_stage = str(tensorboard_cfg.get("feature_stage", "stage2"))
+        self.tb_log_dir = work_dir / str(tensorboard_cfg.get("log_dir", "tensorboard"))
+        self.tb_writer = None
+        if self.tb_enabled and is_main_process():
+            if SummaryWriter is None:
+                warnings.warn("TensorBoard is enabled but the tensorboard package is not installed.", stacklevel=2)
+            else:
+                self.tb_writer = SummaryWriter(log_dir=str(self.tb_log_dir))
+
+    @staticmethod
+    def _normalize_image(image: Tensor) -> Tensor:
+        image = image.detach().float().cpu()
+        if image.ndim == 2:
+            image = image.unsqueeze(0)
+        if image.ndim != 3:
+            raise ValueError(f"Expected image tensor with 2 or 3 dims, got {tuple(image.shape)}")
+        return image.clamp(0.0, 1.0)
+
+    @staticmethod
+    def _normalize_map(vis_map: Tensor) -> Tensor:
+        vis_map = vis_map.detach().float().cpu()
+        if vis_map.ndim == 2:
+            vis_map = vis_map.unsqueeze(0)
+        if vis_map.ndim != 3:
+            raise ValueError(f"Expected visualization tensor with 2 or 3 dims, got {tuple(vis_map.shape)}")
+        finite = torch.isfinite(vis_map)
+        if not finite.any():
+            return torch.zeros_like(vis_map)
+        vis_map = torch.where(finite, vis_map, torch.zeros_like(vis_map))
+        min_value = vis_map.min()
+        max_value = vis_map.max()
+        if (max_value - min_value).abs() < 1.0e-6:
+            return torch.zeros_like(vis_map)
+        return (vis_map - min_value) / (max_value - min_value)
+
+    def _log_scalars(self, prefix: str, metrics: dict[str, float], step: int) -> None:
+        if self.tb_writer is None:
+            return
+        for key, value in metrics.items():
+            self.tb_writer.add_scalar(f"{prefix}/{key}", value, step)
+
+    def _log_visuals(self, prefix: str, batch: dict[str, Tensor], outputs: dict[str, Tensor], step: int) -> None:
+        if self.tb_writer is None:
+            return
+        if "imgs" in batch:
+            self.tb_writer.add_image(f"{prefix}/ref_image", self._normalize_image(batch["imgs"][0, 0]), step)
+        if "depth_gt" in batch:
+            self.tb_writer.add_image(f"{prefix}/depth_gt", self._normalize_map(batch["depth_gt"][0]), step)
+        if "coarse_depth" in outputs:
+            coarse_depth = outputs["coarse_depth"][0]
+            if "depth_gt" in batch:
+                coarse_depth = F.interpolate(
+                    coarse_depth.unsqueeze(0),
+                    size=batch["depth_gt"].shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
+            self.tb_writer.add_image(f"{prefix}/coarse_depth", self._normalize_map(coarse_depth), step)
+        feature_pyramid = outputs.get("feature_pyramid")
+        if isinstance(feature_pyramid, dict) and self.tb_feature_stage in feature_pyramid:
+            feature_stage = feature_pyramid[self.tb_feature_stage][0, 0]
+            feature_map = feature_stage.abs().mean(dim=0, keepdim=True)
+            if "imgs" in batch:
+                feature_map = F.interpolate(
+                    feature_map.unsqueeze(0),
+                    size=batch["imgs"].shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
+            self.tb_writer.add_image(f"{prefix}/feature_{self.tb_feature_stage}", self._normalize_map(feature_map), step)
+
+    def close(self) -> None:
+        if self.tb_writer is not None:
+            self.tb_writer.flush()
+            self.tb_writer.close()
+            self.tb_writer = None
 
     def _maybe_step_optimizer(self, grad_clip: float | None) -> None:
         if grad_clip is not None and grad_clip > 0.0:
@@ -167,6 +255,12 @@ class UPRMVSTrainer:
 
             reduced = reduce_dict({key: value.detach() for key, value in loss_dict.items()}, average=True)
             meter.update(tensor_dict_to_floats(reduced))
+            reduced_floats = tensor_dict_to_floats(reduced)
+            if self.tb_writer is not None and (self.global_step % max(self.tb_scalar_interval, 1) == 0):
+                self._log_scalars("train", reduced_floats, self.global_step)
+                self.tb_writer.add_scalar("train/lr", self.optimizer.param_groups[0]["lr"], self.global_step)
+            if self.tb_writer is not None and self.tb_image_interval > 0 and (self.global_step % self.tb_image_interval == 0):
+                self._log_visuals("train", batch, outputs, self.global_step)
 
             if is_main_process() and ((step + 1) % log_interval == 0 or step + 1 == len(train_loader)):
                 elapsed = time.time() - start_time
@@ -176,6 +270,7 @@ class UPRMVSTrainer:
                     f"{format_metrics(averages, ['loss_total', 'loss_coarse', 'loss_chamfer', 'point_abs_error', 'avg_sigma', 'num_final_points'])} "
                     f"lr={self.optimizer.param_groups[0]['lr']:.6e} time={elapsed:.2f}s"
                 )
+            self.global_step += 1
 
         return meter.averages()
 
@@ -184,6 +279,7 @@ class UPRMVSTrainer:
         self.model.eval()
         amp_dtype = str(self.train_cfg.get("amp_dtype", "bf16"))
         meter = ScalarMeter()
+        logged_visuals = False
 
         for batch in val_loader:
             batch = move_to_device(batch, self.device)
@@ -192,6 +288,9 @@ class UPRMVSTrainer:
                 loss_dict = self.criterion(outputs, batch)
             reduced = reduce_dict({key: value.detach() for key, value in loss_dict.items()}, average=True)
             meter.update(tensor_dict_to_floats(reduced))
+            if self.tb_writer is not None and not logged_visuals:
+                self._log_visuals("val", batch, outputs, self.global_step)
+                logged_visuals = True
 
         return meter.averages()
 
@@ -216,6 +315,8 @@ class UPRMVSTrainer:
 
             if (epoch + 1) % val_interval == 0:
                 val_metrics = self.validate(val_loader)
+                if self.tb_writer is not None:
+                    self._log_scalars("val", val_metrics, self.global_step)
                 current_metric = val_metrics.get(self.monitor_key, float("inf"))
                 if current_metric < best_metric:
                     best_metric = current_metric
@@ -261,3 +362,4 @@ class UPRMVSTrainer:
                     monitor_key=self.monitor_key,
                     tag=f"epoch_{epoch:03d}",
                 )
+        self.close()

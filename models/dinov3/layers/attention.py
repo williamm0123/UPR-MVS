@@ -10,6 +10,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from ...transformer.attention_backend import attention_forward, normalize_attention_backend
+
 
 def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int, ...]], List[int]]:
     shapes = [tuple(x.shape) for x in x_list]
@@ -63,12 +65,14 @@ class SelfAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         mask_k_bias: bool = False,
+        attention_backend: str = "auto",
         device=None,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim**-0.5
+        self.attention_backend = normalize_attention_backend(attention_backend)
 
         linear_class = LinearKMaskedBias if mask_k_bias else nn.Linear
         self.qkv = linear_class(dim, dim * 3, bias=qkv_bias, device=device)
@@ -126,7 +130,15 @@ class SelfAttention(nn.Module):
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
         if rope is not None:
             q, k = self.apply_rope(q, k, rope)
-        x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        x = attention_forward(
+            q,
+            k,
+            v,
+            backend=self.attention_backend,
+            dropout_p=self.attn_drop.p,
+            training=self.training,
+            scale=self.scale,
+        )
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
 
@@ -140,15 +152,17 @@ class CausalSelfAttention(nn.Module):
         proj_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        attention_backend: str = "auto",
     ) -> None:
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim**-0.5
+        self.attention_backend = normalize_attention_backend(attention_backend)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = attn_drop
+        self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
 
@@ -169,8 +183,15 @@ class CausalSelfAttention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
-        x = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=self.attn_drop if self.training else 0, is_causal=is_causal
+        x = attention_forward(
+            q,
+            k,
+            v,
+            backend=self.attention_backend,
+            dropout_p=self.attn_drop.p,
+            is_causal=is_causal,
+            training=self.training,
+            scale=self.scale,
         )
         x = x.transpose(1, 2).contiguous().view(B, N, C)
         x = self.proj_drop(self.proj(x))

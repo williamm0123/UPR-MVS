@@ -21,6 +21,7 @@ class UPRMVSTransformerModel(nn.Module):
         super().__init__()
         point_cfg = model_cfg["point"]
         cvt_cfg = model_cfg["cvt"]
+        attention_backend = str(model_cfg.get("attention_backend", "auto"))
 
         self.backbone = DinoV3Backbone(
             name=str(model_cfg.get("dinov3_name", "dinov3_vitb16")),
@@ -29,6 +30,7 @@ class UPRMVSTransformerModel(nn.Module):
             sva_layers=tuple(model_cfg.get("sva_layers", [3, 6, 9])),
             sva_dropout=float(model_cfg.get("sva_dropout", 0.0)),
             use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
+            attention_backend=attention_backend,
         )
         self.coarse_feature_key = str(cvt_cfg.get("feat_key", "stage2"))
         self.cvt = CostVolumeTransformer(
@@ -42,6 +44,7 @@ class UPRMVSTransformerModel(nn.Module):
             fpe_enable=bool(cvt_cfg.get("fpe_enable", True)),
             use_checkpoint=bool(cvt_cfg.get("use_checkpoint", True)),
             share_across_scales=bool(cvt_cfg.get("share_across_scales", False)),
+            attention_backend=str(cvt_cfg.get("attention_backend", attention_backend)),
         )
 
         self.use_gt_mask_for_sampling = bool(point_cfg.get("use_gt_mask_for_sampling", True))

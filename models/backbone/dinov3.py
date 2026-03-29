@@ -50,11 +50,12 @@ class DinoV3Backbone(nn.Module):
         sva_layers: Sequence[int] = (3, 6, 9),
         sva_dropout: float = 0.0,
         use_checkpoint: bool = False,
+        attention_backend: str = "auto",
         out_dim: int = 256,
     ) -> None:
         super().__init__()
         builder, embed_dim = self._resolve_variant(name)
-        self.encoder: DinoVisionTransformer = builder(patch_size=16)
+        self.encoder: DinoVisionTransformer = builder(patch_size=16, attention_backend=attention_backend)
         self.encoder.init_weights()
         self.embed_dim = embed_dim
         self.use_checkpoint = use_checkpoint

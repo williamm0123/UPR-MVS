@@ -123,6 +123,7 @@ class DinoVisionTransformer(nn.Module):
         ignored_kwargs.pop("decoder_cfg", None)
         self.cross_interval_layers = ignored_kwargs.pop("cross_interval_layers", 3)
         self.dino_layer_idxs = ignored_kwargs.pop("dino_layer_idxs", None)
+        attention_backend = ignored_kwargs.pop("attention_backend", "auto")
         if len(ignored_kwargs) > 0:
             logger.warning(f"Ignored kwargs: {ignored_kwargs}")
         del ignored_kwargs
@@ -184,6 +185,7 @@ class DinoVisionTransformer(nn.Module):
                 ffn_layer=ffn_layer_cls,
                 init_values=layerscale_init,
                 mask_k_bias=mask_k_bias,
+                attention_backend=attention_backend,
                 device=device,
             )
             for i in range(depth)

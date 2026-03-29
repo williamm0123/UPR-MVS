@@ -224,6 +224,7 @@ def main() -> None:
         metrics = trainer.validate(val_loader)
         if is_main_process():
             print(f"[val-only] {format_metrics(metrics)}")
+        trainer.close()
         synchronize()
         cleanup_distributed()
         return
@@ -236,6 +237,7 @@ def main() -> None:
         max_epochs=int(config["train"]["epochs"]),
         best_metric=best_metric,
     )
+    trainer.close()
     synchronize()
     cleanup_distributed()
 

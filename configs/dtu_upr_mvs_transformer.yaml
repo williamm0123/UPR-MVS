@@ -3,6 +3,7 @@ model:
   dinov3_name: dinov3_vitb16
   dinov3_pretrained: /scr/user/qinglong/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
   dinov3_output_layers: [3, 7, 11]
+  attention_backend: auto
   sva_layers: [3, 6, 9]
   sva_dropout: 0.0
   use_checkpoint: true
@@ -17,6 +18,7 @@ model:
     d_bins: 64
     scales: [4, 8, 16]
     num_groups: 8
+    attention_backend: auto
     use_checkpoint: true
     share_across_scales: false
 
@@ -87,6 +89,12 @@ train:
   val_interval: 1
   save_interval: 1
   monitor_key: auto
+  tensorboard:
+    enable: true
+    log_dir: tensorboard
+    scalar_interval: 20
+    image_interval: 200
+    feature_stage: stage2
 
 optim:
   name: adamw
