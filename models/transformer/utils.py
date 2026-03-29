@@ -50,6 +50,9 @@ def homo_warping(src_features: Tensor, src_projection: Tensor, ref_projection: T
     norm_y = (proj_xy[:, 1].view(b, d, h, w) / max(h - 1, 1)) * 2.0 - 1.0
     grid = torch.stack((norm_x, norm_y), dim=-1)
 
+    # Make grid contiguous to avoid cuDNN error
+    grid = grid.contiguous()
+    
     warped = F.grid_sample(
         src_features,
         grid.view(b, d * h, w, 2),
