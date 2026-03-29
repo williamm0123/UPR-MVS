@@ -27,11 +27,20 @@ def compute_coarse_depth_loss(outputs: dict[str, Tensor], batch: dict[str, Tenso
     mask = batch["mask"]
     has_depth_gt = batch["has_depth_gt"].view(-1, 1, 1, 1)
 
-    target_depth, target_mask = downsample_depth_and_mask(depth_gt, mask, coarse_depth.shape[-2:])
+    # 修复类型错误：将 torch.Size 转换为 tuple[int, int]
+    target_hw = (coarse_depth.shape[-2], coarse_depth.shape[-1])
+    target_depth, target_mask = downsample_depth_and_mask(depth_gt, mask, target_hw)
     valid_mask = target_mask & has_depth_gt & torch.isfinite(target_depth) & (target_depth > 0.0)
 
+    # 新增：loss 缩放因子
+    depth_loss_scale = float(loss_cfg.get("depth_loss_scale", 0.01))
+    
     if valid_mask.any():
-        loss_coarse = F.smooth_l1_loss(coarse_depth[valid_mask], target_depth[valid_mask])
+        # 应用缩放因子到 depth GT，将 mm 转为更小的数值
+        scaled_target = target_depth * depth_loss_scale
+        scaled_coarse = coarse_depth * depth_loss_scale
+        loss_coarse = F.smooth_l1_loss(scaled_coarse[valid_mask], scaled_target[valid_mask])
+        
         abs_error = (coarse_depth - target_depth).abs()
         depth_abs_error = masked_mean(abs_error, valid_mask)
         thres_2mm = masked_mean((abs_error < 2.0).float(), valid_mask)

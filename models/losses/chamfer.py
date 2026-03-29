@@ -30,4 +30,10 @@ def chamfer_distance_loss(
 
     if not batch_losses:
         return zero
-    return torch.stack(batch_losses).mean()
+    
+    chamfer_loss = torch.stack(batch_losses).mean()
+    
+    # 新增：Chamfer loss 缩放因子 (归一化点云距离)
+    # DTU 点云坐标通常在毫米级别，除以 1000 转为米级别
+    chamfer_scale = 0.001
+    return chamfer_loss * chamfer_scale

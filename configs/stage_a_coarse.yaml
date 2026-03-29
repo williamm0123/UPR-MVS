@@ -1,7 +1,7 @@
 model:
   backbone: dinov3
   dinov3_name: dinov3_vitb16
-  dinov3_pretrained: /scr/user/qinglong/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  dinov3_pretrained: /home/william/project/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
   dinov3_output_layers: [3, 7, 11]
   attention_backend: auto
   sva_layers: [3, 6, 9]
@@ -36,84 +36,80 @@ model:
     predict_uncertainty: true
 
   densify:
-    enable: true
-    tau_sigma: 0.15
-    tau_alpha: 0.6
-    use_sigma_gate: true
-    split_factor: 2
-    offset_scale: 0.35
-    max_new_points: 12000
-    final_knn: 16
-    final_candidate_k: 64
+    enable: false
 
 data:
   dataset: dtu
-  train_root: /scr/user/qinglong/dataset/DTU/dtu_training
-  val_root: /scr/user/qinglong/dataset/DTU/dtu_training
-  test_root: /scr/user/qinglong/dataset/DTU/dtu_test
-  test_gt_root: /scr/user/qinglong/dataset/DTU/dtu_training
+  train_root: /home/william/project/dataset/DTU/dtu_training
+  val_root: /home/william/project/dataset/DTU/dtu_training
+  test_root: /home/william/project/dataset/DTU/dtu_training
+  test_gt_root: /home/william/project/dataset/DTU/dtu_training
   train_layout: trainval
   val_layout: trainval
-  test_layout: dtu_test
-  train_list: lists/dtu/train.txt
-  val_list: lists/dtu/val.txt
-  test_list: lists/dtu/test.txt
+  test_layout: trainval
+  train_list: saved/local_smoke_train.txt
+  val_list: saved/local_smoke_val.txt
+  test_list: saved/local_smoke_val.txt
   pair_file: Cameras/pair.txt
   camera_dir: Cameras
   rectified_dir: Rectified_raw
   depth_dir: Depths_raw
   mask_dir: Depths_raw
-  test_image_dir: images
-  test_camera_dirs: [cams_1, cams]
-  test_pair_file: pair.txt
+  test_image_dir: Rectified_raw
+  test_camera_dirs: [Cameras]
+  test_pair_file: Cameras/pair.txt
   img_h: 512
   img_w: 640
   n_views: 5
-  train_light_ids: [0, 1, 2, 3, 4, 5, 6]
-  eval_light_ids: [3]
+  train_light_ids: [0]
+  eval_light_ids: [0]
   depth_scale: 1.0
 
 train:
-  stage: coarse_only          # 第一阶段：只训练 coarse depth
-  epochs: 8                   # 8 个 epoch
+  stage: coarse_only
+  epochs: 8
   batch_size_per_gpu: 1
   batch_size_point_per_gpu: 1
   batch_size_joint_per_gpu: 1
-  num_workers: 8
+  num_workers: 0
   grad_accum_steps: 1
   grad_clip: 1.0
   amp_dtype: bf16
   use_ddp: false
   seed: 42
-  log_interval: 20
+  log_interval: 1
   val_interval: 1
   save_interval: 1
-  monitor_key: depth_abs_error  # 第一阶段监控 depth 误差
+  monitor_key: depth_abs_error
   use_loss_nan_check: true
   early_stop_on_nan: true
   tensorboard:
     enable: true
     log_dir: tensorboard
-    scalar_interval: 20
-    image_interval: 200
+    scalar_interval: 1
+    image_interval: 1
     feature_stage: stage2
 
 optim:
   name: adamw
-  lr_backbone: 0.0001          # 第一阶段可以稍大
+  lr_backbone: 0.0001
   lr_coarse: 0.0002
-  lr_point: 0.0002             # point 模块不训练
+  lr_point: 0.0002
   joint_coarse_lr_scale: 0.2
   weight_decay: 0.01
   betas: [0.9, 0.999]
   warmup_epochs: 1
   warmup_lr_init: 1.0e-6
 
+scheduler:
+  name: cosine
+  min_lr: 1.0e-6
+
 loss:
-  coarse_weight: 1.0           # 第一阶段只用 coarse loss
-  chamfer_weight: 0.0          # 关闭 chamfer loss
-  uncertainty_weight: 0.0      # 关闭 uncertainty loss
-  feature_weight: 0.0          # 关闭 feature loss
+  coarse_weight: 1.0
+  chamfer_weight: 0.0
+  uncertainty_weight: 0.0
+  feature_weight: 0.0
   repulsion_weight: 0.0
   alpha_weight: 0.0
   alpha_error_threshold: 2.0

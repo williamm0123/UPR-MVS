@@ -3,12 +3,13 @@ from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, cast
 import warnings
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.utils.data import DistributedSampler
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:  # pragma: no cover - optional runtime dependency
@@ -19,6 +20,9 @@ from engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwra
 from models.upr_mvs import UPRMVSModel
 from models.upr_mvs_transformer import UPRMVSTransformerModel
 from utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
+
+# 修复 GradScaler 导入警告
+from torch.cuda.amp import GradScaler
 
 
 def set_requires_grad(module: nn.Module, enabled: bool) -> None:
@@ -31,14 +35,25 @@ def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
     if not isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
         return
 
+    # 默认全部训练
     set_requires_grad(model_unwrapped.backbone, True)
     set_requires_grad(model_unwrapped.cvt, True)
     set_requires_grad(model_unwrapped.feature_lifter, True)
     set_requires_grad(model_unwrapped.point_refiner, True)
 
-    if train_stage == "point_refine":
+    if train_stage == "coarse_only":
+        # 第一阶段：只训练 coarse depth (cvt)，冻结其他模块
+        set_requires_grad(model_unwrapped.backbone, False)
+        set_requires_grad(model_unwrapped.feature_lifter, False)
+        set_requires_grad(model_unwrapped.point_refiner, False)
+    elif train_stage == "point_refine":
+        # 第二阶段：只训练 point 模块，冻结 backbone 和 cvt
         set_requires_grad(model_unwrapped.backbone, False)
         set_requires_grad(model_unwrapped.cvt, False)
+    elif train_stage == "joint":
+        # 第三阶段：全部训练，但 coarse 使用较小学习率
+        # 学习率调整在 optimizer 中通过 joint_coarse_lr_scale 实现
+        pass
 
 
 def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
@@ -46,7 +61,10 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
     optim_cfg = config["optim"]
     train_stage = str(config["train"].get("stage", "coarse_only")).lower()
     weight_decay = float(optim_cfg.get("weight_decay", 0.0))
-    betas = tuple(float(beta) for beta in optim_cfg.get("betas", [0.9, 0.999]))
+    
+    # 修复类型错误：显式转换为 tuple[float, float]
+    betas_list = optim_cfg.get("betas", [0.9, 0.999])
+    betas: tuple[float, float] = (float(betas_list[0]), float(betas_list[1]))
 
     def collect_params(module: nn.Module) -> list[Tensor]:
         return [parameter for parameter in module.parameters() if parameter.requires_grad]
@@ -75,23 +93,58 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
 
 def build_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]) -> Any:
     scheduler_cfg = config.get("scheduler", {"name": "cosine", "min_lr": 1.0e-6})
+    optim_cfg = config.get("optim", {})  # 新增：从 config 读取 optim 配置
+    train_cfg = config.get("train", {})
+    
     name = str(scheduler_cfg.get("name", "cosine")).lower()
+    
+    # 新增：warmup 支持
+    warmup_epochs = int(optim_cfg.get("warmup_epochs", 0))
+    warmup_lr_init = float(optim_cfg.get("warmup_lr_init", 1.0e-6))
+    
     if name == "cosine":
-        epochs = int(config["train"]["epochs"])
+        epochs = int(train_cfg.get("epochs", 1))
         min_lr = float(scheduler_cfg.get("min_lr", 1.0e-6))
+        
+        # 如果有 warmup，使用 SequentialLR
+        if warmup_epochs > 0:
+            # 使用最大的学习率作为基准
+            max_lr = max(
+                float(optim_cfg.get("lr_backbone", 1.0e-4)),
+                float(optim_cfg.get("lr_coarse", 2.0e-4)),
+                float(optim_cfg.get("lr_point", 4.0e-4))
+            )
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=warmup_lr_init / max_lr,
+                end_factor=1.0,
+                total_iters=warmup_epochs
+            )
+            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(epochs - warmup_epochs, 1),
+                eta_min=min_lr
+            )
+            return torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs]
+            )
+        
         return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=min_lr)
+    
     if name == "multistep":
-        milestones = [int(step) for step in scheduler_cfg.get("milestones", [int(config["train"]["epochs"]) // 2])]
+        milestones_list = scheduler_cfg.get("milestones", [int(train_cfg.get("epochs", 1)) // 2])
+        milestones = [int(step) for step in milestones_list]
         gamma = float(scheduler_cfg.get("gamma", 0.1))
         return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=gamma)
+    
     raise ValueError(f"Unsupported scheduler: {name}")
 
 
 def build_grad_scaler(enabled: bool) -> Any:
-    try:
-        return torch.amp.GradScaler("cuda", enabled=enabled)
-    except (AttributeError, TypeError):
-        return torch.cuda.amp.GradScaler(enabled=enabled)
+    # 使用已导入的 GradScaler
+    return GradScaler(enabled=enabled)
 
 
 def autocast_context(device: torch.device, amp_dtype: str) -> Any:
@@ -195,17 +248,20 @@ class UPRMVSTrainer:
                 ).squeeze(0)
             self.tb_writer.add_image(f"{prefix}/coarse_depth", self._normalize_map(coarse_depth), step)
         feature_pyramid = outputs.get("feature_pyramid")
-        if isinstance(feature_pyramid, dict) and self.tb_feature_stage in feature_pyramid:
-            feature_stage = feature_pyramid[self.tb_feature_stage][0, 0]
-            feature_map = feature_stage.abs().mean(dim=0, keepdim=True)
-            if "imgs" in batch:
-                feature_map = F.interpolate(
-                    feature_map.unsqueeze(0),
-                    size=batch["imgs"].shape[-2:],
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0)
-            self.tb_writer.add_image(f"{prefix}/feature_{self.tb_feature_stage}", self._normalize_map(feature_map), step)
+        if isinstance(feature_pyramid, dict):
+            # 修复类型错误：使用 .get() 方法避免类型检查问题
+            feature_tensor = feature_pyramid.get(self.tb_feature_stage)
+            if feature_tensor is not None:
+                feature_stage = feature_tensor[0, 0]
+                feature_map = feature_stage.abs().mean(dim=0, keepdim=True)
+                if "imgs" in batch:
+                    feature_map = F.interpolate(
+                        feature_map.unsqueeze(0),
+                        size=batch["imgs"].shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze(0)
+                self.tb_writer.add_image(f"{prefix}/feature_{self.tb_feature_stage}", self._normalize_map(feature_map), step)
 
     def close(self) -> None:
         if self.tb_writer is not None:
@@ -232,6 +288,10 @@ class UPRMVSTrainer:
         log_interval = int(self.train_cfg.get("log_interval", 20))
         grad_clip = float(self.train_cfg.get("grad_clip", 0.0))
         amp_dtype = str(self.train_cfg.get("amp_dtype", "bf16"))
+        
+        # 新增：NaN 检查配置
+        use_nan_check = bool(self.train_cfg.get("use_loss_nan_check", False))
+        early_stop_on_nan = bool(self.train_cfg.get("early_stop_on_nan", False))
 
         self.optimizer.zero_grad(set_to_none=True)
         meter = ScalarMeter()
@@ -243,6 +303,16 @@ class UPRMVSTrainer:
                 outputs = self.model(batch)
                 loss_dict = self.criterion(outputs, batch)
                 scaled_loss = loss_dict["loss_total"] / accum_steps
+
+            # 新增：NaN/Inf 检查
+            if use_nan_check:
+                if not torch.isfinite(scaled_loss):
+                    print(f"[WARNING] Loss is not finite at step {step}. Skipping batch.")
+                    if early_stop_on_nan:
+                        print("[ERROR] Early stopping due to NaN loss.")
+                        break
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
 
             if self.scaler.is_enabled():
                 self.scaler.scale(scaled_loss).backward()
@@ -307,8 +377,9 @@ class UPRMVSTrainer:
         save_interval = int(self.train_cfg.get("save_interval", 1))
 
         for epoch in range(start_epoch, max_epochs):
+            # 修复类型检查：使用 cast 断言为 DistributedSampler
             if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
-                train_sampler.set_epoch(epoch)
+                cast(DistributedSampler, train_sampler).set_epoch(epoch)
 
             train_metrics = self.train_one_epoch(train_loader, epoch)
             val_metrics: dict[str, float] | None = None
