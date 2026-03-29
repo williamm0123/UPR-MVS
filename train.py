@@ -350,7 +350,11 @@ def main() -> None:
         model = build_model(stage_config).to(ddp_cfg.device)
         print(f"           ✓ Model built ({time.time() - step_start:.2f}s)")
         
-        configure_trainable_modules(model, str(stage_config["train"].get("stage", "coarse_only")).lower())
+        configure_trainable_modules(
+            model,
+            str(stage_config["train"].get("stage", "coarse_only")).lower(),
+            stage_config.get("loss"),
+        )
         
         # Apply stage-specific model configurations
         apply_stage_config(model, stage_config, stage_name, ddp_cfg.device)

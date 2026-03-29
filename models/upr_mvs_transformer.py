@@ -117,6 +117,7 @@ class UPRMVSTransformerModel(nn.Module):
             attention_backend=str(cvt_cfg.get("attention_backend", "sdpa")),
             use_checkpoint=bool(cvt_cfg.get("use_checkpoint", False)),
             share_across_scales=bool(cvt_cfg.get("share_across_scales", False)),
+            process_all_scales=bool(cvt_cfg.get("process_all_scales", False)),
         )
 
         # Initialize Depth Refinement Head if enabled

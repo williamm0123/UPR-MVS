@@ -37,12 +37,17 @@ def set_requires_grad(module: nn.Module, enabled: bool) -> None:
         parameter.requires_grad = enabled
 
 
-def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
+def configure_trainable_modules(
+    model: nn.Module,
+    train_stage: str,
+    loss_cfg: dict[str, Any] | None = None,
+) -> None:
     model_unwrapped = unwrap_model(model)
     if not isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
         return
 
     model_unwrapped.active_train_stage = train_stage
+    loss_cfg = loss_cfg or {}
 
     # 默认全部训练
     set_requires_grad(model_unwrapped.backbone, True)
@@ -73,6 +78,16 @@ def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
         # 第三阶段：全部训练，但 coarse 使用较小学习率
         # 学习率调整在 optimizer 中通过 joint_coarse_lr_scale 实现
         pass
+
+    point_refiner = getattr(model_unwrapped, "point_refiner", None)
+    if point_refiner is not None:
+        sigma_head = getattr(point_refiner, "sigma_head", None)
+        if sigma_head is not None and float(loss_cfg.get("uncertainty_weight", 0.0)) <= 0.0:
+            set_requires_grad(sigma_head, False)
+
+        alpha_head = getattr(point_refiner, "alpha_head", None)
+        if alpha_head is not None and float(loss_cfg.get("alpha_weight", 0.0)) <= 0.0:
+            set_requires_grad(alpha_head, False)
 
 
 def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:

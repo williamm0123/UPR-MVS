@@ -86,14 +86,19 @@ class CostVolumeTransformer(nn.Module):
         fpe_enable: bool = True,
         use_checkpoint: bool = False,
         share_across_scales: bool = False,
+        process_all_scales: bool = False,
         attention_backend: str = "auto",
     ) -> None:
         super().__init__()
         self.d_bins = d_bins
         self.scales = tuple(scales)
+        if not self.scales:
+            raise ValueError("CostVolumeTransformer.scales must contain at least one scale.")
+        self.active_scales = self.scales if process_all_scales else (self.scales[0],)
         self.num_groups = num_groups
         self.feature_dim = feature_dim
         self.use_checkpoint = use_checkpoint
+        self.process_all_scales = process_all_scales
         self.fpe = FrustoconicalPositionalEncoding3D(feature_dim) if fpe_enable else None
         self.token_proj = nn.Linear(self.num_groups, feature_dim)
 
@@ -110,10 +115,10 @@ class CostVolumeTransformer(nn.Module):
                 ]
             )
 
-        self.blocks = build_stack()
+        self.blocks = build_stack() if share_across_scales else nn.ModuleList()
         self.scale_blocks = nn.ModuleDict()
         if not share_across_scales:
-            for s in self.scales:
+            for s in self.active_scales:
                 self.scale_blocks[str(s)] = build_stack()
         self.share_across_scales = share_across_scales
         self.logit_head = nn.Conv3d(feature_dim, 1, kernel_size=1)
@@ -166,7 +171,7 @@ class CostVolumeTransformer(nn.Module):
         volume_tokens = []
         per_scale_logits: dict[str, Tensor] = {}
 
-        for scale in self.scales:
+        for scale in self.active_scales:
             sd = max(1, d_bins // scale)
             sh = max(1, h // max(scale // 4, 1))
             sw = max(1, w // max(scale // 4, 1))
@@ -189,7 +194,7 @@ class CostVolumeTransformer(nn.Module):
             vol = x.reshape(b, sd, sh, sw, self.feature_dim).permute(0, 4, 1, 2, 3)
             logits = self.logit_head(vol).squeeze(1)
             per_scale_logits[f"scale_{scale}"] = logits
-            if scale == self.scales[0]:
+            if scale == self.active_scales[0]:
                 coarse_logits = logits
                 probs = F.softmax(logits, dim=1)
                 dv = sample_depth_planes(depth_range, sd)
