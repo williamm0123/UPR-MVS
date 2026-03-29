@@ -48,7 +48,8 @@ class UPRMVSTransformerModel(nn.Module):
         super().__init__()
         self.model_cfg = model_cfg
         self.backbone_name = str(model_cfg.get("backbone", "dinov3")).lower()
-        self.coarse_feature_key = str(model_cfg.get("feat_key", "stage2"))
+        cvt_cfg = model_cfg.get("cvt", {})
+        self.coarse_feature_key = str(cvt_cfg.get("feat_key", model_cfg.get("feat_key", "stage2")))
         
         # Check if CCFF is enabled
         self.use_ccff = bool(model_cfg.get("ccff", {}).get("enable", False))
@@ -90,6 +91,7 @@ class UPRMVSTransformerModel(nn.Module):
             depth_mult = float(ccff_cfg.get("depth_mult", 1.0))
             expansion = float(ccff_cfg.get("expansion", 1.0))
             act = str(ccff_cfg.get("act", "silu"))
+            out_index = int(ccff_cfg.get("out_index", 0))
             
             self.ccff = CCFF(
                 in_channels=backbone_stage_channels,
@@ -97,14 +99,12 @@ class UPRMVSTransformerModel(nn.Module):
                 depth_mult=depth_mult,
                 expansion=expansion,
                 act=act,
-                out_index=0,
+                out_index=out_index,
                 return_all=False,
             )
-            # Update feature key to use fused features
-            self.coarse_feature_key = "ccff_output"
+            if self.coarse_feature_key == "ccff_output":
+                self.coarse_feature_key = "ccff_output"
         
-        # Initialize CVT
-        cvt_cfg = model_cfg.get("cvt", {})
         self.cvt = CostVolumeTransformer(
             feature_dim=int(cvt_cfg.get("feature_dim", 256)),
             num_layers=int(cvt_cfg.get("num_layers", 6)),

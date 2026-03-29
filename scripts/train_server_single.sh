@@ -1,6 +1,6 @@
 #!/bin/bash
 # UPR-MVS Server Single-GPU Training Script (A100 80GB)
-# 用于服务器 A100 80GB 单卡三阶段自动训练 - 高显存利用率版本
+# 用于服务器 A100 80GB 单卡三阶段自动训练 - 保守启动版本
 
 set -e
 
@@ -9,15 +9,15 @@ echo "  UPR-MVS Server Training (A100 80GB)"
 echo "========================================"
 echo ""
 
-# Environment setup for server training with high memory utilization
+# Environment setup for server training
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
 export NCCL_DEBUG=ERROR
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "🚀 Starting server production training..."
-echo "📊 Expected GPU memory usage: ~65-70GB (85% utilization)"
-echo "⏱️  Estimated time: ~7 days (20 epochs x 3 stages)"
+echo "📊 Expected GPU memory usage: ~30-45GB (conservative startup profile)"
+echo "⏱️  Estimated time: longer than max-throughput mode, but safer to start"
 echo ""
 
 # Activate conda environment if needed
@@ -31,12 +31,13 @@ cd /scr/user/qinglong/projects/UPR-MVS
 echo ""
 echo "📋 Configuration Summary:"
 echo "   - Config: configs/server_training.config"
-echo "   - Batch Size: 4 (Stage A), 3 (Stage B), 2 (Stage C)"
-echo "   - Gradient Accumulation: 9, 8, 9 steps (渐进式策略)"
-echo "   - Image Size: 1024x1280"
+echo "   - Batch Size: 2 (Stage A), 2 (Stage B), 1 (Stage C)"
+echo "   - Gradient Accumulation: 16, 12, 16 steps"
+echo "   - Image Size: 768x1024"
 echo "   - Views: 5"
 echo "   - Epochs: 20 per stage"
-echo "   - D bins: 256 (improved from 64)"
+echo "   - D bins: 128"
+echo "   - CCFF/CVT dim: 128/128"
 echo ""
 
 # Start training with automatic 3-stage execution
