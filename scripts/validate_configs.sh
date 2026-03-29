@@ -1,94 +1,105 @@
 #!/bin/bash
 # UPR-MVS Configuration Validation Script
-# 用于快速检查本地和服务器配置的正确性
+# 用于验证配置文件的正确性（不需要数据集）
 
 set -e
 
 echo "========================================"
-echo "  UPR-MVS Configuration Validator"
+echo "  UPR-MVS Config Validation"
 echo "========================================"
 echo ""
 
-LOCAL_CONFIG="configs/local_training.config"
-SERVER_CONFIG="configs/server_training.config"
+export CUDA_VISIBLE_DEVICES=0
+export OMP_NUM_THREADS=4
+export NCCL_DEBUG=ERROR
 
-# Check if config files exist
-if [ ! -f "$LOCAL_CONFIG" ]; then
-    echo "❌ Local config not found: $LOCAL_CONFIG"
-    exit 1
+if [ -d "/home/user/qinglong/.conda/envs/mvs2" ]; then
+    source /home/user/qinglong/.conda/envs/mvs2/bin/activate
+    echo "✅ Conda environment activated"
 fi
 
-if [ ! -f "$SERVER_CONFIG" ]; then
-    echo "❌ Server config not found: $SERVER_CONFIG"
-    exit 1
-fi
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."  # Go to project root
 
-echo "✅ Config files found"
+echo "📁 Working directory: $(pwd)"
 echo ""
 
-# Function to check configuration values
-check_config() {
-    local config_file=$1
-    local config_name=$2
-    
-    echo "=== Checking $config_name ==="
-    
-    # Extract key parameters
-    local img_h=$(grep "^  img_h:" "$config_file" | head -1 | awk '{print $2}')
-    local img_w=$(grep "^  img_w:" "$config_file" | head -1 | awk '{print $2}')
-    local n_views=$(grep "^  n_views:" "$config_file" | head -1 | awk '{print $2}')
-    local d_bins=$(grep "^    d_bins:" "$config_file" | head -1 | awk '{print $2}')
-    local use_checkpoint=$(grep "^  use_checkpoint:" "$config_file" | head -1 | awk '{print $2}')
-    
-    echo "   Image Size: ${img_h}x${img_w}"
-    echo "   Views: $n_views"
-    echo "   D bins: $d_bins"
-    echo "   Gradient Checkpointing: $use_checkpoint"
-    
-    # Check stage-specific settings
-    echo ""
-    echo "   Stage Settings:"
-    
-    # Stage A
-    local stage_a_batch=$(awk '/stage_a:/,/stage_b:/{if(/batch_size_per_gpu:/) print $2}' "$config_file")
-    local stage_a_accum=$(awk '/stage_a:/,/stage_b:/{if(/grad_accum_steps:/) print $2}' "$config_file")
-    local stage_a_epochs=$(awk '/stage_a:/,/stage_b:/{if(/epochs:/) print $2}' "$config_file")
-    echo "      Stage A: batch=$stage_a_batch, accum=$stage_a_accum, epochs=$stage_a_epochs"
-    
-    # Stage B
-    local stage_b_batch=$(awk '/stage_b:/,/stage_c:/{if(/batch_size_per_gpu:/) print $2}' "$config_file")
-    local stage_b_accum=$(awk '/stage_b:/,/stage_c:/{if(/grad_accum_steps:/) print $2}' "$config_file")
-    local stage_b_epochs=$(awk '/stage_b:/,/stage_c:/{if(/epochs:/) print $2}' "$config_file")
-    echo "      Stage B: batch=$stage_b_batch, accum=$stage_b_accum, epochs=$stage_b_epochs"
-    
-    # Stage C
-    local stage_c_batch=$(awk '/stage_c:/,/^[^ ]/{if(/batch_size_per_gpu:/) print $2}' "$config_file")
-    local stage_c_accum=$(awk '/stage_c:/,/^[^ ]/{if(/grad_accum_steps:/) print $2}' "$config_file")
-    local stage_c_epochs=$(awk '/stage_c:/,/^[^ ]/{if(/epochs:/) print $2}' "$config_file")
-    echo "      Stage C: batch=$stage_c_batch, accum=$stage_c_accum, epochs=$stage_c_epochs"
-    
-    echo ""
-}
-
-check_config "$LOCAL_CONFIG" "Local Training (5060Ti 16GB)"
-check_config "$SERVER_CONFIG" "Server Training (A100 80GB)"
-
-echo "========================================"
-echo "Configuration validation complete!"
-echo "========================================"
+echo "🔍 Validating configurations..."
 echo ""
 
-# Quick GPU detection
-if command -v nvidia-smi &> /dev/null; then
-    echo "📊 Current GPU:"
-    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits | while read name memory; do
-        echo "   - $name ($memory GB)"
-    done
-    echo ""
-fi
+# Test 1: Check config file syntax
+echo "[Test 1] Checking config file syntax..."
+python3 -c "
+import yaml
+configs = ['configs/local_training.config', 'configs/server_training.config']
+for cfg in configs:
+    with open(cfg, 'r') as f:
+        config = yaml.safe_load(f)
+    print(f'  ✓ {cfg} loaded successfully')
+    
+    # Validate key structures
+    assert 'model' in config, 'Missing model config'
+    assert 'data' in config, 'Missing data config'
+    assert 'training_stages' in config, 'Missing training_stages config'
+    
+    # Validate training stages
+    for stage in ['stage_a', 'stage_b', 'stage_c']:
+        assert stage in config['training_stages'], f'Missing {stage}'
+        stage_cfg = config['training_stages'][stage]
+        assert 'batch_size_per_gpu' in stage_cfg, f'Missing batch_size in {stage}'
+        assert 'grad_accum_steps' in stage_cfg, f'Missing grad_accum_steps in {stage}'
+        
+        # Calculate effective batch size
+        effective_batch = stage_cfg['batch_size_per_gpu'] * stage_cfg['grad_accum_steps']
+        print(f'    {stage}: Batch={stage_cfg[\"batch_size_per_gpu\"]}, Accum={stage_cfg[\"grad_accum_steps\"]}, Effective={effective_batch}')
+    
+    print(f'  ✓ {cfg} validation passed')
+    print()
+"
 
-echo "💡 To start training:"
-echo "   Local test:     bash scripts/train_local.sh"
-echo "   Server single:  bash scripts/train_server_single.sh"
-echo "   Server multi:   bash scripts/train_server_multigpu.sh <num_gpus>"
+# Test 2: Model architecture validation (without data loading)
+echo "[Test 2] Validating model architecture..."
+python3 -c "
+import torch
+import yaml
+from models.upr_mvs_transformer import UPRMVSTransformerModel
+
+with open('configs/server_training.config', 'r') as f:
+    config = yaml.safe_load(f)
+
+model_cfg = config['model'].copy()
+# Temporarily disable pretrained loading for validation
+model_cfg['dinov3_pretrained'] = None
+print('  Building model with config (pretrained disabled)...')
+
+try:
+    model = UPRMVSTransformerModel(model_cfg)
+    print('  ✓ Model created successfully')
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'  ✓ Total params: {total_params:,} ({trainable_params:,} trainable)')
+    
+    print('  ✓ Model architecture validation passed (skip forward pass without CUDA)')
+    
+except Exception as e:
+    print(f'  ✗ Model creation failed: {e}')
+    raise
+"
+
+echo ""
+echo "========================================"
+echo "  ✅ All validation tests passed!"
+echo "========================================"
+echo ""
+echo "Configuration summary:"
+echo "  - Config files: Valid YAML syntax"
+echo "  - Training stages: Properly configured"
+echo "  - Model architecture: Can be instantiated"
+echo ""
+echo "📊 Next steps:"
+echo "  1. ✓ Config validation complete"
+echo "  2. Run on server with: bash scripts/train_server_single.sh"
 echo ""
