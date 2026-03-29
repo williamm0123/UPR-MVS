@@ -1,10 +1,10 @@
 # UPR-MVS Stage A: Coarse Depth Pretraining Configuration
-# 用于服务器 A100 80GB 多卡训练
+# 用于本地 RTX 5060Ti 16GB 单卡测试
 
 model:
   backbone: dinov3
   dinov3_name: dinov3_vitb16
-  dinov3_pretrained: /scr/user/qinglong/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  dinov3_pretrained: /home/william/project/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
   dinov3_output_layers: [3, 7, 11]
   attention_backend: auto
   sva_layers: [3, 6, 9]
@@ -43,13 +43,13 @@ model:
 
 data:
   dataset: dtu
-  train_root: /scr/user/qinglong/dataset/DTU/dtu_training
-  val_root: /scr/user/qinglong/dataset/DTU/dtu_training
-  test_root: /scr/user/qinglong/dataset/DTU/dtu_test
-  test_gt_root: /scr/user/qinglong/dataset/DTU/dtu_training
+  train_root: /home/william/project/dataset/DTU/dtu_training
+  val_root: /home/william/project/dataset/DTU/dtu_training
+  test_root: /home/william/project/dataset/DTU/dtu_training
+  test_gt_root: /home/william/project/dataset/DTU/dtu_training
   train_layout: trainval
   val_layout: trainval
-  test_layout: dtu_test
+  test_layout: trainval
   train_list: lists/dtu/train.txt
   val_list: lists/dtu/val.txt
   test_list: lists/dtu/test.txt
@@ -58,7 +58,7 @@ data:
   rectified_dir: Rectified_raw
   depth_dir: Depths_raw
   mask_dir: Depths_raw
-  test_image_dir: images
+  test_image_dir: Rectified_raw
   test_camera_dirs: [Cameras]
   test_pair_file: Cameras/pair.txt
   img_h: 512
@@ -70,10 +70,10 @@ data:
 
 train:
   stage: coarse_only
-  epochs: 10
+  epochs: 1
   batch_size_per_gpu: 1
   batch_size_joint_per_gpu: 1
-  num_workers: 8
+  num_workers: 0
   grad_accum_steps: 1
   grad_clip: 1.0
   amp_dtype: bf16

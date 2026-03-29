@@ -23,6 +23,15 @@ echo "工作目录：$WORK_DIR"
 echo "GPU 数量：$NUM_GPUS"
 echo ""
 
+# 检查数据集路径
+echo "正在检查数据集路径..."
+DATA_ROOT="/scr/user/qinglong/dataset/DTU/dtu_training"
+if [ ! -d "$DATA_ROOT" ]; then
+    echo "❌ 警告：数据集路径不存在：$DATA_ROOT"
+    echo "   请确保 DTU 数据集已下载到该路径"
+    echo ""
+fi
+
 # 运行 DDP 训练
 torchrun \
   --standalone \

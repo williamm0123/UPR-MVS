@@ -19,6 +19,15 @@ echo "使用配置：$CONFIG_FILE"
 echo "工作目录：$WORK_DIR"
 echo ""
 
+# 检查数据集路径
+echo "正在检查数据集路径..."
+DATA_ROOT="/home/william/project/dataset/DTU/dtu_training"
+if [ ! -d "$DATA_ROOT" ]; then
+    echo "❌ 警告：数据集路径不存在：$DATA_ROOT"
+    echo "   请确保 DTU 数据集已下载到该路径"
+    echo ""
+fi
+
 # 运行训练
 python train.py \
   --config "$CONFIG_FILE" \

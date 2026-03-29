@@ -1,4 +1,4 @@
-# UPR-MVS Stage A: Coarse Depth Pretraining Configuration
+# UPR-MVS Stage C: Joint Fine-tuning Configuration
 # 用于服务器 A100 80GB 多卡训练
 
 model:
@@ -39,7 +39,15 @@ model:
     predict_uncertainty: true
 
   densify:
-    enable: false
+    enable: true
+    tau_sigma: 0.15
+    tau_alpha: 0.6
+    use_sigma_gate: true
+    split_factor: 2
+    offset_scale: 0.35
+    max_new_points: 12000
+    final_knn: 16
+    final_candidate_k: 64
 
 data:
   dataset: dtu
@@ -69,7 +77,7 @@ data:
   depth_scale: 1.0
 
 train:
-  stage: coarse_only
+  stage: joint
   epochs: 10
   batch_size_per_gpu: 1
   batch_size_joint_per_gpu: 1
@@ -81,7 +89,7 @@ train:
   log_interval: 1
   val_interval: 1
   save_interval: 1
-  monitor_key: depth_abs_error
+  monitor_key: point_abs_error
   use_loss_nan_check: true
   early_stop_on_nan: true
   tensorboard:
@@ -93,13 +101,13 @@ train:
 
 optim:
   name: adamw
-  lr_backbone: 0.0001
-  lr_coarse: 0.0002
-  lr_point: 0.0002
+  lr_backbone: 0.00005
+  lr_coarse: 0.00002
+  lr_point: 0.0004
   joint_coarse_lr_scale: 0.2
   weight_decay: 0.01
   betas: [0.9, 0.999]
-  warmup_epochs: 1
+  warmup_epochs: 0
   warmup_lr_init: 1.0e-6
 
 scheduler:
@@ -107,12 +115,12 @@ scheduler:
   min_lr: 1.0e-6
 
 loss:
-  coarse_weight: 1.0
-  chamfer_weight: 0.0
-  uncertainty_weight: 0.0
-  feature_weight: 0.0
-  repulsion_weight: 0.0
-  alpha_weight: 0.0
+  coarse_weight: 0.1
+  chamfer_weight: 1.0
+  uncertainty_weight: 0.2
+  feature_weight: 0.5
+  repulsion_weight: 0.05
+  alpha_weight: 0.2
   alpha_error_threshold: 2.0
   feature_stage: stage2
   depth_loss_scale: 0.01
