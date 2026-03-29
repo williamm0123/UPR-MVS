@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from ..transformer.utils import scale_intrinsics
+from ..transformer.utils import safe_grid_sample, scale_intrinsics
 
 
 def project_world_to_view(points_world: Tensor, intrinsics: Tensor, extrinsics: Tensor) -> tuple[Tensor, Tensor]:
@@ -45,7 +45,7 @@ def sample_feature_map(feature_map: Tensor, pixel_coords: Tensor) -> tuple[Tenso
     norm_x = (x / max(width - 1, 1)) * 2.0 - 1.0
     norm_y = (y / max(height - 1, 1)) * 2.0 - 1.0
     grid = torch.stack((norm_x, norm_y), dim=-1).view(batch_size, -1, 1, 2)
-    sampled = F.grid_sample(
+    sampled = safe_grid_sample(
         feature_map,
         grid,
         mode="bilinear",
