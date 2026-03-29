@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local experiments
+dtu_upr_mvs_transformer_local_smoke.yaml
+local_smoke_train.txt
+local_smoke_val.txt
+local_smoke_run/
+
+# Training outputs
+saved/
+checkpoints/
+runs/
+log/
+logs/
+
+# Optional model/data artifacts
+*.pth
+*.pt
+*.ckpt
+*.tar
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
