@@ -245,7 +245,8 @@ class UPRMVSTrainer:
         self.tb_scalar_interval = int(tensorboard_cfg.get("scalar_interval", train_cfg.get("log_interval", 20)))
         self.tb_image_interval = int(tensorboard_cfg.get("image_interval", 200))
         self.tb_feature_stage = str(tensorboard_cfg.get("feature_stage", "stage2"))
-        self.tb_log_dir = work_dir / str(tensorboard_cfg.get("log_dir", "tensorboard"))
+        tb_log_dir = str(tensorboard_cfg.get("log_dir", "tensorboard")).strip()
+        self.tb_log_dir = work_dir if tb_log_dir in {"", ".", "./"} else work_dir / tb_log_dir
         self.tb_writer = None
         if self.tb_enabled and is_main_process():
             if SummaryWriter is None:
