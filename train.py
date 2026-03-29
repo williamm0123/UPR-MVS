@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
+    if not config_path.is_file() and not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as handle:
@@ -128,6 +130,9 @@ def resolve_resume_mode(resume_path: str, work_dir: Path, requested_mode: str) -
 
 def main() -> None:
     args = parse_args()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = (PROJECT_ROOT / config_path).resolve()
     config = load_config(args.config)
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -145,9 +150,19 @@ def main() -> None:
         with resolved_config_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(config, handle, sort_keys=False)
 
-    train_dataset = build_dtu_dataset(config["data"], split="train")
+    train_dataset = build_dtu_dataset(
+        config["data"],
+        split="train",
+        project_root=PROJECT_ROOT,
+        config_dir=config_path.parent,
+    )
     val_split = "val" if "val_list" in config["data"] else "test"
-    val_dataset = build_dtu_dataset(config["data"], split=val_split)
+    val_dataset = build_dtu_dataset(
+        config["data"],
+        split=val_split,
+        project_root=PROJECT_ROOT,
+        config_dir=config_path.parent,
+    )
 
     batch_size = resolve_train_batch_size(config["train"])
     num_workers = int(config["train"].get("num_workers", 4))

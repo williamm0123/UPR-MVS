@@ -25,6 +25,7 @@ class UPRMVSTransformerModel(nn.Module):
         self.backbone = DinoV3Backbone(
             name=str(model_cfg.get("dinov3_name", "dinov3_vitb16")),
             pretrained=model_cfg.get("dinov3_pretrained") or None,
+            output_layers=tuple(model_cfg.get("dinov3_output_layers", [3, 7, 11])),
             sva_layers=tuple(model_cfg.get("sva_layers", [3, 6, 9])),
             sva_dropout=float(model_cfg.get("sva_dropout", 0.0)),
             use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),

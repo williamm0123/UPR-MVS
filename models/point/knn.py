@@ -20,33 +20,63 @@ def build_knn_graph(
     points: Tensor,
     pixel_coords: Tensor,
     k: int,
-    point_mask: Tensor,
+    point_mask: Tensor | None = None,
     candidate_k: int = 64,
+    chunk_size: int = 1024,
 ) -> Tensor:
-    """Build simple masked KNN graph using Euclidean distance in xyz+pixel space."""
-    del candidate_k  # kept for API compatibility
+    """Build a pixel-aware kNN graph in chunks to avoid allocating a full NxN matrix."""
     if points.ndim != 3 or points.shape[-1] != 3:
-        raise ValueError(f"Expected points [B,N,3], got {tuple(points.shape)}")
+        raise ValueError(f"Expected points with shape [B, N, 3], got {tuple(points.shape)}")
+    if pixel_coords.shape[:2] != points.shape[:2] or pixel_coords.shape[-1] != 2:
+        raise ValueError("pixel_coords must have shape [B, N, 2] and align with points.")
 
-    b, n, _ = points.shape
-    feat = torch.cat([points, pixel_coords], dim=-1)
-    dist = torch.cdist(feat, feat, p=2)
-    mask = point_mask.squeeze(-1) > 0
+    batch_size, num_points, _ = points.shape
+    if num_points <= 1:
+        return torch.zeros((batch_size, num_points, 1), device=points.device, dtype=torch.long)
 
-    # Invalidate masked nodes both as src and dst.
-    src_valid = mask.unsqueeze(-1)
-    dst_valid = mask.unsqueeze(1)
-    valid_pair = src_valid & dst_valid
-    dist = dist.masked_fill(~valid_pair, float("inf"))
+    effective_k = min(max(int(k), 1), max(num_points - 1, 1))
+    candidate_k = min(max(int(candidate_k), effective_k + 1), num_points)
 
-    eye = torch.eye(n, device=points.device, dtype=torch.bool).unsqueeze(0).expand(b, -1, -1)
-    dist = dist.masked_fill(eye, float("inf"))
-    k_eff = max(1, min(int(k), n - 1))
-    idx = torch.topk(dist, k=k_eff, dim=-1, largest=False).indices
+    if point_mask is None:
+        valid_mask = torch.ones((batch_size, num_points), device=points.device, dtype=torch.bool)
+    else:
+        valid_mask = point_mask.squeeze(-1).bool() if point_mask.ndim == 3 else point_mask.bool()
 
-    # For invalid source points, return self indices to keep gather safe downstream.
-    if not mask.all():
-        self_idx = torch.arange(n, device=points.device).view(1, n, 1).expand(b, -1, k_eff)
-        idx = torch.where(mask.unsqueeze(-1), idx, self_idx)
+    all_neighbor_chunks: list[Tensor] = []
+    all_indices = torch.arange(num_points, device=points.device).view(1, num_points).expand(batch_size, -1)
 
-    return idx
+    for start in range(0, num_points, max(int(chunk_size), 1)):
+        end = min(start + max(int(chunk_size), 1), num_points)
+        query_pixels = pixel_coords[:, start:end]  # [B, Q, 2]
+        query_points = points[:, start:end]  # [B, Q, 3]
+        query_valid = valid_mask[:, start:end]  # [B, Q]
+
+        pixel_dist = torch.cdist(query_pixels, pixel_coords)  # [B, Q, N]
+        pixel_dist = pixel_dist.masked_fill(~valid_mask.unsqueeze(1), float("inf"))
+
+        candidate_indices = torch.topk(pixel_dist, k=candidate_k, dim=-1, largest=False, sorted=False).indices
+        candidate_points = gather_by_index(points, candidate_indices)  # [B, Q, C, 3]
+        point_dist = (candidate_points - query_points.unsqueeze(2)).square().sum(dim=-1)  # [B, Q, C]
+
+        candidate_valid = gather_by_index(valid_mask.float().unsqueeze(-1), candidate_indices).squeeze(-1) > 0.5
+        point_dist = point_dist.masked_fill(~candidate_valid, float("inf"))
+
+        query_indices = all_indices[:, start:end].unsqueeze(-1)  # [B, Q, 1]
+        point_dist = point_dist.masked_fill(candidate_indices == query_indices, float("inf"))
+        point_dist = point_dist.masked_fill(~query_valid.unsqueeze(-1), float("inf"))
+
+        local_neighbor = torch.topk(point_dist, k=effective_k, dim=-1, largest=False, sorted=False).indices
+        neighbor_indices = torch.gather(candidate_indices, dim=-1, index=local_neighbor)
+        neighbor_valid = torch.gather(candidate_valid, dim=-1, index=local_neighbor)
+        fallback_indices = query_indices.expand(-1, -1, effective_k)
+        neighbor_indices = torch.where(neighbor_valid, neighbor_indices, fallback_indices)
+
+        if effective_k < int(k):
+            pad = query_indices.expand(-1, -1, int(k) - effective_k)
+            neighbor_indices = torch.cat([neighbor_indices, pad], dim=-1)
+
+        invalid_queries = ~query_valid.unsqueeze(-1)
+        neighbor_indices = torch.where(invalid_queries, query_indices.expand_as(neighbor_indices), neighbor_indices)
+        all_neighbor_chunks.append(neighbor_indices)
+
+    return torch.cat(all_neighbor_chunks, dim=1)

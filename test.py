@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
+    if not config_path.is_file() and not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as handle:
@@ -117,6 +119,9 @@ def evaluate(
 
 def main() -> None:
     args = parse_args()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = (PROJECT_ROOT / config_path).resolve()
     config = load_config(args.config)
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +134,12 @@ def main() -> None:
     )
     set_seed(int(config["train"].get("seed", 42)), ddp_cfg.rank)
 
-    dataset = build_dtu_dataset(config["data"], split=args.split)
+    dataset = build_dtu_dataset(
+        config["data"],
+        split=args.split,
+        project_root=PROJECT_ROOT,
+        config_dir=config_path.parent,
+    )
     data_loader, _ = build_dataloader(
         dataset=dataset,
         batch_size=1,

@@ -1,7 +1,8 @@
 model:
   backbone: dinov3
   dinov3_name: dinov3_vitb16
-  dinov3_pretrained: ""
+  dinov3_pretrained: /scr/user/qinglong/dataset/DINOv3/pre_trained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  dinov3_output_layers: [3, 7, 11]
   sva_layers: [3, 6, 9]
   sva_dropout: 0.0
   use_checkpoint: true

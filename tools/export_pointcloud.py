@@ -11,7 +11,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# Scripts are executed from tools/, so the repository root must be importable.
+# Make sibling packages importable when running `python tools/export_pointcloud.py`.
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
+    if not config_path.is_file() and not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as handle:
@@ -56,13 +58,21 @@ def build_model(config: dict[str, Any]) -> torch.nn.Module:
 
 def main() -> None:
     args = parse_args()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = (PROJECT_ROOT / config_path).resolve()
     config = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     work_dir = Path(args.work_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = build_dtu_dataset(config["data"], split=args.split)
+    dataset = build_dtu_dataset(
+        config["data"],
+        split=args.split,
+        project_root=PROJECT_ROOT,
+        config_dir=config_path.parent,
+    )
     data_loader = DataLoader(
         dataset,
         batch_size=1,

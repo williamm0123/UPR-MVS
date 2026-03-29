@@ -43,9 +43,10 @@ def sparse_feature_consistency_loss(
         src_depth_vis = (src_depth > 0.0).unsqueeze(-1)
 
         valid_mask = point_mask & ref_vis & src_vis & ref_depth_vis & src_depth_vis
-        per_point_error = (ref_feat - src_feat).abs().mean(dim=-1, keepdim=True)
-        total_loss = total_loss + masked_mean(per_point_error, valid_mask)
-        total_count = total_count + 1.0
+        if bool(valid_mask.any()):
+            per_point_error = (ref_feat - src_feat).abs().mean(dim=-1, keepdim=True)
+            total_loss = total_loss + masked_mean(per_point_error, valid_mask)
+            total_count = total_count + 1.0
 
     if total_count.item() == 0:
         return zero

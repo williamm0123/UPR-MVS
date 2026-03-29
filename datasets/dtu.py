@@ -222,7 +222,36 @@ def load_mask(mask_path: Path | None, depth: np.ndarray) -> np.ndarray:
     return (mask > 0.5).astype(np.float32)
 
 
-def build_dtu_dataset(config: dict[str, Any], split: str) -> "DTUMVSDataset":
+def _resolve_external_path(path_like: str | Path | None, project_root: Path | None, config_dir: Path | None) -> Path | None:
+    if path_like is None:
+        return None
+
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    if path.exists():
+        return path.resolve()
+
+    anchored_candidates: list[Path] = []
+    if project_root is not None:
+        anchored_candidates.append(Path(project_root) / path)
+    if config_dir is not None:
+        anchored_candidates.append(Path(config_dir) / path)
+
+    for candidate in anchored_candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    return anchored_candidates[0] if anchored_candidates else path
+
+
+def build_dtu_dataset(
+    config: dict[str, Any],
+    split: str,
+    *,
+    project_root: Path | None = None,
+    config_dir: Path | None = None,
+) -> "DTUMVSDataset":
     list_key = f"{split}_list"
     root_key = f"{split}_root"
     layout_key = f"{split}_layout"
@@ -234,15 +263,17 @@ def build_dtu_dataset(config: dict[str, Any], split: str) -> "DTUMVSDataset":
     root = config.get(root_key, config.get("root"))
     if root is None:
         raise KeyError(f"Dataset config missing root path for split '{split}'.")
+    resolved_root = _resolve_external_path(root, project_root=project_root, config_dir=config_dir)
 
     layout = str(config.get(layout_key, "dtu_test" if split == "test" else "trainval")).lower()
-    gt_root = config.get(gt_root_key)
+    gt_root = _resolve_external_path(config.get(gt_root_key), project_root=project_root, config_dir=config_dir)
+    list_file = _resolve_external_path(config[list_key], project_root=project_root, config_dir=config_dir)
 
     return DTUMVSDataset(
-        root=root,
+        root=resolved_root,
         split=split,
         layout=layout,
-        list_file=config[list_key],
+        list_file=list_file,
         gt_root=gt_root,
         n_views=int(config["n_views"]),
         img_h=int(config["img_h"]),
