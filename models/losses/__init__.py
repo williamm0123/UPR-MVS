@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -25,6 +26,15 @@ class UPRMVSLoss(nn.Module):
     def __init__(self, loss_cfg: dict[str, Any]) -> None:
         super().__init__()
         self.loss_cfg = loss_cfg
+
+    @staticmethod
+    def _disabled_autocast(device_type: str):
+        try:
+            return torch.amp.autocast(device_type=device_type, enabled=False)
+        except (AttributeError, TypeError):
+            if device_type == "cuda":
+                return torch.cuda.amp.autocast(enabled=False)
+            return nullcontext()
 
     def forward(self, outputs: dict[str, Tensor], batch: dict[str, Tensor]) -> dict[str, Tensor]:
         loss_dict = compute_coarse_depth_loss(outputs, batch, self.loss_cfg)
@@ -105,7 +115,12 @@ class UPRMVSLoss(nn.Module):
             threshold=float(self.loss_cfg.get("alpha_error_threshold", 2.0)),
         )
         if bool(point_mask.any()):
-            alpha_loss_map = F.binary_cross_entropy(outputs["alpha"], alpha_target, reduction="none")
+            with self._disabled_autocast(outputs["alpha"].device.type):
+                alpha_loss_map = F.binary_cross_entropy(
+                    outputs["alpha"].float(),
+                    alpha_target.float(),
+                    reduction="none",
+                )
             loss_alpha = masked_mean(alpha_loss_map, point_mask) * float(self.loss_cfg.get("alpha_weight", 0.2))
         else:
             loss_alpha = zero
