@@ -92,7 +92,7 @@ class DepthPointUnprojector(nn.Module):
             "pixel_coords": pixel_coords,
             "point_indices": point_indices,
             "point_confidence": point_conf,
-            "point_mask": point_mask.float(),
+            "point_mask": point_mask,
         }
 
 

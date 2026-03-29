@@ -57,7 +57,7 @@ class RuleBasedDensifier(nn.Module):
         if not self.enable or n == 0:
             return base
 
-        gate = (alpha.squeeze(-1) >= self.tau_alpha) & (point_mask.squeeze(-1) > 0)
+        gate = (alpha.squeeze(-1) >= self.tau_alpha) & point_mask.squeeze(-1).bool()
         if self.use_sigma_gate:
             gate = gate & (sigma.squeeze(-1) <= self.tau_sigma)
 
@@ -122,7 +122,7 @@ class RuleBasedDensifier(nn.Module):
         if max_new == 0:
             return base
 
-        def pad(t: Tensor, out_shape: tuple[int, int], fill: float = 0.0) -> Tensor:
+        def pad(t: Tensor, out_shape: tuple[int, int], fill: bool | float = 0.0) -> Tensor:
             if t.shape[0] == out_shape[0]:
                 return t
             pad_rows = out_shape[0] - t.shape[0]
@@ -130,7 +130,7 @@ class RuleBasedDensifier(nn.Module):
             return torch.cat([t, fill_tensor], dim=0)
 
         new_points = torch.stack([pad(x, (max_new, 3)) for x in all_new_points], dim=0)
-        new_mask = torch.stack([pad(x.float(), (max_new, 1)) for x in all_new_mask], dim=0)
+        new_mask = torch.stack([pad(x, (max_new, 1), fill=False) for x in all_new_mask], dim=0)
         new_pixels = torch.stack([pad(x, (max_new, 2)) for x in all_new_pixels], dim=0)
         new_sigma = torch.stack([pad(x, (max_new, 1)) for x in all_new_sigma], dim=0)
         new_alpha = torch.stack([pad(x, (max_new, 1)) for x in all_new_alpha], dim=0)
@@ -147,7 +147,7 @@ class RuleBasedDensifier(nn.Module):
 
         return {
             "points_final": torch.cat([points_world, new_points], dim=1),
-            "point_final_mask": torch.cat([point_mask.float(), new_mask], dim=1),
+            "point_final_mask": torch.cat([point_mask.bool(), new_mask], dim=1),
             "point_final_pixels": torch.cat([point_pixels, new_pixels], dim=1),
             "point_final_sigma": torch.cat([sigma, new_sigma], dim=1),
             "point_final_alpha": torch.cat([alpha, new_alpha], dim=1),

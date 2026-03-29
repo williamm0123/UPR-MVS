@@ -51,9 +51,9 @@ class UPRMVSLoss(nn.Module):
             return loss_dict
 
         gt_sparse = build_sparse_gt_points(outputs, batch)
-        point_mask = outputs["point_mask"] & gt_sparse["point_gt_mask"]
+        point_mask = outputs["point_mask"].bool() & gt_sparse["point_gt_mask"].bool()
         final_points = outputs.get("points_final", outputs["points_refined"])
-        final_mask = outputs.get("point_final_mask", outputs["point_mask"])
+        final_mask = outputs.get("point_final_mask", outputs["point_mask"]).bool()
 
         point_abs_error, point_error_map = compute_point_l1_error(
             pred_points=outputs["points_refined"],
