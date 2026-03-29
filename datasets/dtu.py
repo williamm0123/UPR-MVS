@@ -264,10 +264,14 @@ def build_dtu_dataset(
     if root is None:
         raise KeyError(f"Dataset config missing root path for split '{split}'.")
     resolved_root = _resolve_external_path(root, project_root=project_root, config_dir=config_dir)
+    if resolved_root is None:
+        raise RuntimeError(f"Failed to resolve dataset root for split '{split}': {root}")
 
     layout = str(config.get(layout_key, "dtu_test" if split == "test" else "trainval")).lower()
     gt_root = _resolve_external_path(config.get(gt_root_key), project_root=project_root, config_dir=config_dir)
     list_file = _resolve_external_path(config[list_key], project_root=project_root, config_dir=config_dir)
+    if list_file is None:
+        raise RuntimeError(f"Failed to resolve dataset split list for split '{split}': {config[list_key]}")
 
     return DTUMVSDataset(
         root=resolved_root,
