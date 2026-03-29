@@ -27,6 +27,11 @@ fi
 echo "🚀 Starting multi-GPU training with $NUM_GPUS GPUs..."
 echo ""
 
+# Environment setup for multi-GPU training
+export OMP_NUM_THREADS=4
+export NCCL_DEBUG=ERROR
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # Activate conda environment if needed
 if [ -d "/scr/user/qinglong/.conda/envs/mvs2" ]; then
     source /scr/user/qinglong/.conda/envs/mvs2/bin/activate
@@ -39,7 +44,10 @@ echo ""
 echo "📋 Configuration:"
 echo "   - Config: configs/server_training.config"
 echo "   - GPUs: $NUM_GPUS"
-echo "   - Effective Batch Size: ${NUM_GPUS}x per stage"
+echo "   - DDP: Enabled"
+echo "   - Batch Size: per-GPU value comes from config"
+echo "   - Global Batch: scales with GPU count x grad_accum_steps"
+echo "   - OMP_NUM_THREADS: $OMP_NUM_THREADS per process"
 echo ""
 
 # Start DDP training
