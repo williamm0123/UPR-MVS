@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence
-import warnings
 
 import torch
 import torch.nn.functional as F
@@ -163,30 +162,23 @@ class DinoV3Backbone(nn.Module):
             raise RuntimeError(
                 f"No DINOv3 backbone weights matched the current model when loading {checkpoint_path}."
             )
-
-        critical_keys = (
-            "cls_token",
-            "patch_embed.proj.weight",
-            "blocks.0.attn.qkv.weight",
-            "norm.weight",
-        )
-        missing_critical = [key for key in critical_keys if key in encoder_state and key not in loadable_state]
-        if missing_critical:
+        missing_keys = [key for key in encoder_state if key not in loadable_state]
+        if missing_keys or mismatched_keys:
+            problems: list[str] = []
+            if missing_keys:
+                missing_preview = ", ".join(missing_keys[:10])
+                missing_suffix = " ..." if len(missing_keys) > 10 else ""
+                problems.append(f"missing_keys={missing_preview}{missing_suffix}")
+            if mismatched_keys:
+                mismatch_preview = "; ".join(mismatched_keys[:5])
+                mismatch_suffix = " ..." if len(mismatched_keys) > 5 else ""
+                problems.append(f"mismatched_shapes={mismatch_preview}{mismatch_suffix}")
             raise RuntimeError(
-                "Checkpoint is missing critical DINOv3 backbone weights: "
-                f"{missing_critical}. Refusing to continue with a partial backbone load."
+                "Refusing to continue with a partial DINOv3 backbone load from "
+                f"{checkpoint_path}: {' | '.join(problems)}"
             )
 
-        load_result = self.encoder.load_state_dict(loadable_state, strict=False)
-        if mismatched_keys:
-            preview = "; ".join(mismatched_keys[:5])
-            suffix = " ..." if len(mismatched_keys) > 5 else ""
-            warnings.warn(f"Ignored DINOv3 weights with mismatched shapes: {preview}{suffix}", stacklevel=2)
-
-        if load_result.missing_keys:
-            preview = ", ".join(load_result.missing_keys[:10])
-            suffix = " ..." if len(load_result.missing_keys) > 10 else ""
-            warnings.warn(f"DINOv3 backbone missing keys after load: {preview}{suffix}", stacklevel=2)
+        self.encoder.load_state_dict(loadable_state, strict=True)
 
     def _run_block(self, block: nn.Module, x: Tensor, rope_sincos: tuple[Tensor, Tensor] | None) -> Tensor:
         if self.use_checkpoint and self.training and x.requires_grad:
