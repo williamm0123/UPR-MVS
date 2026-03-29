@@ -8,8 +8,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
-from upr_mvs.models.transformer.positional_encoding import Normalized2DPositionalEncoding
-from upr_mvs.models.transformer.side_view_attention import SideViewAttention
+from ..transformer.positional_encoding import Normalized2DPositionalEncoding
+from ..transformer.side_view_attention import SideViewAttention
 
 
 class PatchEmbed(nn.Module):

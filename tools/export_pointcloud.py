@@ -11,17 +11,17 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE_ROOT = PROJECT_ROOT.parent
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
+# Scripts are executed from tools/, so the repository root must be importable.
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from upr_mvs.datasets.dtu import build_dtu_dataset
-from upr_mvs.engine.checkpoint_io import load_checkpoint, resolve_resume_path
-from upr_mvs.engine.ddp_utils import move_to_device
-from upr_mvs.engine.trainer import configure_trainable_modules
-from upr_mvs.models.upr_mvs import UPRMVSModel
-from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
-from upr_mvs.utils.pointcloud import filter_valid_points, write_ply_ascii
+from datasets.dtu import build_dtu_dataset
+from engine.checkpoint_io import load_checkpoint, resolve_resume_path
+from engine.ddp_utils import move_to_device
+from engine.trainer import configure_trainable_modules
+from models.upr_mvs import UPRMVSModel
+from models.upr_mvs_transformer import UPRMVSTransformerModel
+from utils.pointcloud import filter_valid_points, write_ply_ascii
 
 
 def parse_args() -> argparse.Namespace:

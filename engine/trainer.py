@@ -8,11 +8,11 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from upr_mvs.engine.checkpoint_io import save_checkpoint
-from upr_mvs.engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwrap_model
-from upr_mvs.models.upr_mvs import UPRMVSModel
-from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
-from upr_mvs.utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
+from engine.checkpoint_io import save_checkpoint
+from engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwrap_model
+from models.upr_mvs import UPRMVSModel
+from models.upr_mvs_transformer import UPRMVSTransformerModel
+from utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
 
 
 def set_requires_grad(module: nn.Module, enabled: bool) -> None:

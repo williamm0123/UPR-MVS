@@ -6,14 +6,14 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from upr_mvs.models.backbone.dinov3 import DinoV3Backbone
-from upr_mvs.models.point.densify import RuleBasedDensifier
-from upr_mvs.models.point.feature_lifting import MultiViewFeatureLifter
-from upr_mvs.models.point.knn import build_knn_graph
-from upr_mvs.models.point.point_refiner import EdgeConvPointRefiner
-from upr_mvs.models.point.unproject import DepthPointUnprojector
-from upr_mvs.models.transformer.cost_volume_transformer import CostVolumeTransformer
-from upr_mvs.models.transformer.utils import scale_intrinsics
+from .backbone.dinov3 import DinoV3Backbone
+from .point.densify import RuleBasedDensifier
+from .point.feature_lifting import MultiViewFeatureLifter
+from .point.knn import build_knn_graph
+from .point.point_refiner import EdgeConvPointRefiner
+from .point.unproject import DepthPointUnprojector
+from .transformer.cost_volume_transformer import CostVolumeTransformer
+from .transformer.utils import scale_intrinsics
 
 
 class UPRMVSTransformerModel(nn.Module):
