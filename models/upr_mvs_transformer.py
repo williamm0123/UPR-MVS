@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, cast
+import warnings
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -72,18 +73,25 @@ class UPRMVSTransformerModel(nn.Module):
             sva_dropout=sva_dropout,
             use_checkpoint=use_checkpoint,
         )
+        backbone_stage_channels = self._resolve_backbone_stage_channels()
 
         # Initialize CCFF if enabled
         if self.use_ccff:
             ccff_cfg = model_cfg["ccff"]
-            in_channels = list(ccff_cfg.get("in_channels", [768, 768, 768]))
+            configured_in_channels = [int(ch) for ch in ccff_cfg.get("in_channels", backbone_stage_channels)]
+            if configured_in_channels != backbone_stage_channels:
+                warnings.warn(
+                    "model.ccff.in_channels does not match the backbone's projected stage widths "
+                    f"{backbone_stage_channels}; using runtime backbone widths instead of {configured_in_channels}.",
+                    stacklevel=2,
+                )
             hidden_dim = int(ccff_cfg.get("hidden_dim", 256))
             depth_mult = float(ccff_cfg.get("depth_mult", 1.0))
             expansion = float(ccff_cfg.get("expansion", 1.0))
             act = str(ccff_cfg.get("act", "silu"))
             
             self.ccff = CCFF(
-                in_channels=in_channels,
+                in_channels=backbone_stage_channels,
                 hidden_dim=hidden_dim,
                 depth_mult=depth_mult,
                 expansion=expansion,
@@ -123,10 +131,19 @@ class UPRMVSTransformerModel(nn.Module):
 
         # Initialize other modules
         point_cfg = model_cfg.get("point", {})
+        point_stage_keys = list(point_cfg.get("lift_stage_keys", ["stage1", "stage2", "stage3"]))
+        image_feature_dim = self._resolve_uniform_feature_dim(point_stage_keys)
+        configured_image_feature_dim = point_cfg.get("image_feat_dim", point_cfg.get("image_feature_dim"))
+        if configured_image_feature_dim is not None and int(configured_image_feature_dim) != image_feature_dim:
+            warnings.warn(
+                "model.point.image_feat_dim does not match the selected stage feature width "
+                f"{image_feature_dim}; using runtime feature width instead of {configured_image_feature_dim}.",
+                stacklevel=2,
+            )
         self.feature_lifter = MultiViewFeatureLifter(
-            image_feature_dim=int(point_cfg.get("feat_dim", 160)),     # 修复参数名
-            point_feature_dim=int(point_cfg.get("feat_dim", 160)),    # 新增参数
-            stage_keys=list(point_cfg.get("lift_stage_keys", ["stage1", "stage2", "stage3"])),  # 修复参数名
+            image_feature_dim=image_feature_dim,
+            point_feature_dim=int(point_cfg.get("feat_dim", 160)),
+            stage_keys=point_stage_keys,
         )
         
         self.point_refiner = EdgeConvPointRefiner(
@@ -151,6 +168,39 @@ class UPRMVSTransformerModel(nn.Module):
         self.unprojector = DepthPointUnprojector()
         self.use_gt_mask_for_sampling = bool(model_cfg.get("use_gt_mask_for_sampling", True))
 
+    def _get_backbone_projection(self, stage_key: str) -> nn.Conv2d:
+        if stage_key not in self.backbone.out_proj:
+            raise KeyError(f"Backbone is missing projection layer for stage '{stage_key}'")
+
+        proj = self.backbone.out_proj[stage_key]
+        if not isinstance(proj, nn.Conv2d):
+            raise TypeError(
+                f"Backbone projection for stage '{stage_key}' must be nn.Conv2d, got {type(proj).__name__}"
+            )
+        return proj
+
+    def _resolve_backbone_stage_channels(self) -> list[int]:
+        return [int(self._get_backbone_projection(stage_key).out_channels) for stage_key in self.backbone.STAGE_NAMES]
+
+    def _resolve_feature_channels(self, stage_key: str) -> int:
+        if stage_key == "ccff_output":
+            if not self.use_ccff:
+                raise KeyError("Requested 'ccff_output' channels but CCFF is disabled.")
+            return int(self.ccff.hidden_dim)
+        return int(self._get_backbone_projection(stage_key).out_channels)
+
+    def _resolve_uniform_feature_dim(self, stage_keys: list[str]) -> int:
+        if not stage_keys:
+            raise ValueError("point.lift_stage_keys must contain at least one stage.")
+
+        stage_dims = [self._resolve_feature_channels(stage_key) for stage_key in stage_keys]
+        if len(set(stage_dims)) != 1:
+            raise ValueError(
+                "MultiViewFeatureLifter currently expects all selected lift stages to share one feature width, "
+                f"but got {dict(zip(stage_keys, stage_dims))}."
+            )
+        return stage_dims[0]
+
     def _encode_multiview_features(self, images: Tensor) -> tuple[dict[str, Tensor], tuple[int, int]]:
         feats = self.backbone.forward_multiview(images)
         
@@ -162,25 +212,17 @@ class UPRMVSTransformerModel(nn.Module):
             stage3 = feats.get("stage3", None)
             
             if stage1 is not None and stage2 is not None and stage3 is not None:
-                # CCFF expects 4D input [batch, channels, H, W]
-                # But backbone outputs 5D [batch, views, channels, H, W]
-                # Need to merge batch and views dimensions
-                B, V, C1, H1, W1 = stage1.shape
-                _, _, C2, H2, W2 = stage2.shape
-                _, _, C3, H3, W3 = stage3.shape
-                
-                # Reshape to 4D by merging B and V
-                stage1_flat = stage1.reshape(B * V, C1, H1, W1)
-                stage2_flat = stage2.reshape(B * V, C2, H2, W2)
-                stage3_flat = stage3.reshape(B * V, C3, H3, W3)
-                
-                # CCFF fusion on flattened tensors
-                fused_flat = self.ccff(stage1_flat, stage2_flat, stage3_flat)
-                
-                # Restore 5D shape
-                _, C_fused, H_fused, W_fused = fused_flat.shape
-                fused = fused_flat.reshape(B, V, C_fused, H_fused, W_fused)
-                
+                # CCFF works on 4D tensors, so merge batch and view dims first.
+                batch_size, num_views, c1, h1, w1 = stage1.shape
+                _, _, c2, h2, w2 = stage2.shape
+                _, _, c3, h3, w3 = stage3.shape
+                fused_flat = self.ccff(
+                    stage1.reshape(batch_size * num_views, c1, h1, w1),
+                    stage2.reshape(batch_size * num_views, c2, h2, w2),
+                    stage3.reshape(batch_size * num_views, c3, h3, w3),
+                )
+                _, fused_channels, fused_h, fused_w = fused_flat.shape
+                fused = fused_flat.reshape(batch_size, num_views, fused_channels, fused_h, fused_w)
                 feats["ccff_output"] = fused
         
         return feats, (images.shape[-2], images.shape[-1])
