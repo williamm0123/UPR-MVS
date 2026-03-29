@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import warnings
 from typing import Any
 
@@ -167,6 +168,7 @@ class UPRMVSTransformerModel(nn.Module):
         
         self.unprojector = DepthPointUnprojector()
         self.use_gt_mask_for_sampling = bool(model_cfg.get("use_gt_mask_for_sampling", True))
+        self.active_train_stage = str(model_cfg.get("train_stage", "joint")).lower()
 
     def _get_backbone_projection(self, stage_key: str) -> nn.Conv2d:
         if stage_key not in self.backbone.out_proj:
@@ -201,6 +203,17 @@ class UPRMVSTransformerModel(nn.Module):
             )
         return stage_dims[0]
 
+    @staticmethod
+    def _module_has_trainable_params(module: nn.Module | None) -> bool:
+        if module is None:
+            return False
+        return any(parameter.requires_grad for parameter in module.parameters())
+
+    def _grad_context_for_modules(self, *modules: nn.Module | None):
+        if any(self._module_has_trainable_params(module) for module in modules):
+            return nullcontext()
+        return torch.no_grad()
+
     def _encode_multiview_features(self, images: Tensor) -> tuple[dict[str, Tensor], tuple[int, int]]:
         feats = self.backbone.forward_multiview(images)
         
@@ -232,32 +245,43 @@ class UPRMVSTransformerModel(nn.Module):
         intrinsics = batch["intrinsics"]
         extrinsics = batch["extrinsics"]
         depth_range = batch["depth_range"]
+        train_stage = str(self.active_train_stage).lower()
 
-        feature_pyramid, image_hw = self._encode_multiview_features(images)
+        with self._grad_context_for_modules(self.backbone, self.ccff if self.use_ccff else None):
+            feature_pyramid, image_hw = self._encode_multiview_features(images)
         coarse_features = feature_pyramid[self.coarse_feature_key]
         
         # Get coarse depth from CVT
-        coarse_outputs = self.cvt(
-            features=coarse_features,
-            intrinsics=intrinsics,
-            extrinsics=extrinsics,
-            depth_range=depth_range,
-            image_hw=image_hw,
-            num_depth_bins=num_depth_bins,
-        )
-        
-        # Apply depth refinement if enabled
-        if self.use_depth_refinement and self.depth_refinement_head is not None:
-            coarse_depth = coarse_outputs["coarse_depth"]
-            refined_depth = self.depth_refinement_head(coarse_depth)
+        with self._grad_context_for_modules(self.cvt, self.depth_refinement_head):
+            coarse_outputs = self.cvt(
+                features=coarse_features,
+                intrinsics=intrinsics,
+                extrinsics=extrinsics,
+                depth_range=depth_range,
+                image_hw=image_hw,
+                num_depth_bins=num_depth_bins,
+            )
             
-            # Ensure refined depth has correct shape
-            if refined_depth.shape != coarse_depth.shape:
-                refined_depth = F.interpolate(refined_depth, size=coarse_depth.shape[-2:], mode="bilinear", align_corners=False)
-            
-            # Update outputs with refined depth
-            coarse_outputs["coarse_depth"] = coarse_depth + refined_depth
-            coarse_outputs["depth_refined"] = True
+            # Apply depth refinement if enabled
+            if self.use_depth_refinement and self.depth_refinement_head is not None:
+                coarse_depth = coarse_outputs["coarse_depth"]
+                refined_depth = self.depth_refinement_head(coarse_depth)
+                
+                # Ensure refined depth has correct shape
+                if refined_depth.shape != coarse_depth.shape:
+                    refined_depth = F.interpolate(
+                        refined_depth,
+                        size=coarse_depth.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                
+                # Update outputs with refined depth
+                coarse_outputs["coarse_depth"] = coarse_depth + refined_depth
+                coarse_outputs["depth_refined"] = True
+
+        if train_stage == "coarse_only":
+            return coarse_outputs
 
         batch_size, num_views, channels, coarse_h, coarse_w = coarse_features.shape
         img_h, img_w = image_hw

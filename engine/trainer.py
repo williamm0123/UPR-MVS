@@ -42,11 +42,18 @@ def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
     if not isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
         return
 
+    model_unwrapped.active_train_stage = train_stage
+
     # 默认全部训练
     set_requires_grad(model_unwrapped.backbone, True)
     set_requires_grad(model_unwrapped.cvt, True)
     set_requires_grad(model_unwrapped.feature_lifter, True)
     set_requires_grad(model_unwrapped.point_refiner, True)
+    if isinstance(model_unwrapped, UPRMVSTransformerModel):
+        if model_unwrapped.use_ccff:
+            set_requires_grad(model_unwrapped.ccff, True)
+        if model_unwrapped.depth_refinement_head is not None:
+            set_requires_grad(model_unwrapped.depth_refinement_head, True)
 
     if train_stage == "coarse_only":
         # 第一阶段：只训练 coarse depth (cvt)，冻结其他模块
@@ -57,6 +64,11 @@ def configure_trainable_modules(model: nn.Module, train_stage: str) -> None:
         # 第二阶段：只训练 point 模块，冻结 backbone 和 cvt
         set_requires_grad(model_unwrapped.backbone, False)
         set_requires_grad(model_unwrapped.cvt, False)
+        if isinstance(model_unwrapped, UPRMVSTransformerModel):
+            if model_unwrapped.use_ccff:
+                set_requires_grad(model_unwrapped.ccff, False)
+            if model_unwrapped.depth_refinement_head is not None:
+                set_requires_grad(model_unwrapped.depth_refinement_head, False)
     elif train_stage == "joint":
         # 第三阶段：全部训练，但 coarse 使用较小学习率
         # 学习率调整在 optimizer 中通过 joint_coarse_lr_scale 实现
@@ -81,6 +93,11 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
         coarse_scale = float(optim_cfg.get("joint_coarse_lr_scale", 0.2)) if train_stage == "joint" else 1.0
         backbone_params = collect_params(model_unwrapped.backbone)
         coarse_params = collect_params(model_unwrapped.cvt)
+        if isinstance(model_unwrapped, UPRMVSTransformerModel):
+            if model_unwrapped.use_ccff:
+                coarse_params.extend(collect_params(model_unwrapped.ccff))
+            if model_unwrapped.depth_refinement_head is not None:
+                coarse_params.extend(collect_params(model_unwrapped.depth_refinement_head))
         point_params = collect_params(model_unwrapped.feature_lifter) + collect_params(model_unwrapped.point_refiner)
         if backbone_params:
             param_groups.append({"params": backbone_params, "lr": float(optim_cfg.get("lr_backbone", 1.0e-4))})
