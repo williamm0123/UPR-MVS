@@ -58,7 +58,7 @@ data:
   test_list: lists/dtu/test.txt
   pair_file: Cameras/pair.txt
   camera_dir: Cameras
-  rectified_dir: DTU_origin/Rectified
+  rectified_dir: Rectified_raw
   depth_dir: Depths_raw
   mask_dir: Depths_raw
   test_image_dir: images
