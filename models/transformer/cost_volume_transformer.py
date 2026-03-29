@@ -53,8 +53,10 @@ class CostVolumeTransformer(nn.Module):
         self.d_bins = d_bins
         self.scales = tuple(scales)
         self.num_groups = num_groups
+        self.feature_dim = feature_dim
         self.use_checkpoint = use_checkpoint
         self.fpe = FrustoconicalPositionalEncoding3D(feature_dim) if fpe_enable else None
+        self.token_proj = nn.Linear(self.num_groups, feature_dim)
 
         def build_stack() -> nn.ModuleList:
             return nn.ModuleList(
@@ -67,7 +69,7 @@ class CostVolumeTransformer(nn.Module):
             for s in self.scales:
                 self.scale_blocks[str(s)] = build_stack()
         self.share_across_scales = share_across_scales
-        self.logit_head = nn.Conv3d(self.num_groups, 1, kernel_size=1)
+        self.logit_head = nn.Conv3d(feature_dim, 1, kernel_size=1)
 
     def _run_blocks(self, x: Tensor, blocks: nn.ModuleList) -> Tensor:
         for block in blocks:
@@ -131,14 +133,13 @@ class CostVolumeTransformer(nn.Module):
 
         for scale, tokens, shape in volume_tokens:
             sd, sh, sw = shape
-            pos = 0.0
+            x = self.token_proj(tokens)
             if self.fpe is not None:
                 pos_feat = self.fpe(sample_depth_planes(depth_range, sd), sh, sw)
-                pos = pos_feat.reshape(b, sd * sh * sw, -1)
-            x = tokens + pos
+                x = x + pos_feat.reshape(b, sd * sh * sw, -1)
             blocks = self.blocks if self.share_across_scales else self.scale_blocks[str(scale)]
             x = self._run_blocks(x, blocks)
-            vol = x.reshape(b, sd, sh, sw, self.num_groups).permute(0, 4, 1, 2, 3)
+            vol = x.reshape(b, sd, sh, sw, self.feature_dim).permute(0, 4, 1, 2, 3)
             logits = self.logit_head(vol).squeeze(1)
             per_scale_logits[f"scale_{scale}"] = logits
             if scale == self.scales[0]:
