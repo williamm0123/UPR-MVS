@@ -162,8 +162,25 @@ class UPRMVSTransformerModel(nn.Module):
             stage3 = feats.get("stage3", None)
             
             if stage1 is not None and stage2 is not None and stage3 is not None:
-                # CCFF expects (low, mid, high) = (high_res, mid_res, low_res)
-                fused = self.ccff(stage1, stage2, stage3)
+                # CCFF expects 4D input [batch, channels, H, W]
+                # But backbone outputs 5D [batch, views, channels, H, W]
+                # Need to merge batch and views dimensions
+                B, V, C1, H1, W1 = stage1.shape
+                _, _, C2, H2, W2 = stage2.shape
+                _, _, C3, H3, W3 = stage3.shape
+                
+                # Reshape to 4D by merging B and V
+                stage1_flat = stage1.reshape(B * V, C1, H1, W1)
+                stage2_flat = stage2.reshape(B * V, C2, H2, W2)
+                stage3_flat = stage3.reshape(B * V, C3, H3, W3)
+                
+                # CCFF fusion on flattened tensors
+                fused_flat = self.ccff(stage1_flat, stage2_flat, stage3_flat)
+                
+                # Restore 5D shape
+                _, C_fused, H_fused, W_fused = fused_flat.shape
+                fused = fused_flat.reshape(B, V, C_fused, H_fused, W_fused)
+                
                 feats["ccff_output"] = fused
         
         return feats, (images.shape[-2], images.shape[-1])
