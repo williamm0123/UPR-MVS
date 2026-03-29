@@ -4,6 +4,18 @@ import torch
 from torch import Tensor
 
 
+def gather_by_index(values: Tensor, index: Tensor) -> Tensor:
+    if values.ndim < 2:
+        raise ValueError(f"Expected values with shape [B, N, ...], got {tuple(values.shape)}")
+    if index.shape[0] != values.shape[0]:
+        raise ValueError("Batch size mismatch between values and index.")
+
+    batch_size = values.shape[0]
+    batch_index_shape = [batch_size] + [1] * (index.ndim - 1)
+    batch_indices = torch.arange(batch_size, device=values.device).view(*batch_index_shape).expand_as(index)
+    return values[batch_indices, index]
+
+
 def build_knn_graph(
     points: Tensor,
     pixel_coords: Tensor,

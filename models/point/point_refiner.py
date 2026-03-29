@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from models.point.knn import build_knn_graph
+from upr_mvs.models.point.knn import build_knn_graph
 
 
 class EdgeConvPointRefiner(nn.Module):

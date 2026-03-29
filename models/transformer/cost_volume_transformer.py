@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
-from models.transformer.positional_encoding import AdaptiveAttentionScaling, FrustoconicalPositionalEncoding3D
-from models.transformer.utils import (
+from upr_mvs.models.transformer.positional_encoding import AdaptiveAttentionScaling, FrustoconicalPositionalEncoding3D
+from upr_mvs.models.transformer.utils import (
     group_wise_correlation,
     homo_warping,
     intrinsics_to_projection,

@@ -4,7 +4,7 @@ from typing import Any
 
 from torch import nn
 
-from models.upr_mvs_transformer import UPRMVSTransformerModel
+from upr_mvs.models.upr_mvs_transformer import UPRMVSTransformerModel
 
 
 class UPRMVSModel(UPRMVSTransformerModel):

@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from models.transformer.utils import scale_intrinsics
-from models.point.unproject import depth_to_world_points, gather_by_index
+from upr_mvs.models.transformer.utils import scale_intrinsics
+from upr_mvs.models.point.unproject import depth_to_world_points, gather_by_index
 
 
 def masked_mean(values: Tensor, mask: Tensor, eps: float = 1.0e-6) -> Tensor:

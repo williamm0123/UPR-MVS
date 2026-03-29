@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from models.transformer.utils import scale_intrinsics
+from upr_mvs.models.transformer.utils import scale_intrinsics
 
 
 def project_world_to_view(points_world: Tensor, intrinsics: Tensor, extrinsics: Tensor) -> tuple[Tensor, Tensor]:
