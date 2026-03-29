@@ -1,76 +1,62 @@
 #!/bin/bash
 # UPR-MVS Server Single-GPU Training Script (A100 80GB)
-# 用于服务器 A100 80GB 单卡三阶段自动训练
+# 用于服务器 A100 80GB 单卡三阶段自动训练 - 高显存利用率版本
 
 set -e
 
 echo "========================================"
-echo "  UPR-MVS Server Single-GPU Training"
+echo "  UPR-MVS Server Training (A100 80GB)"
 echo "========================================"
 echo ""
 
-# Environment setup for server training
+# Environment setup for server training with high memory utilization
 export CUDA_VISIBLE_DEVICES=0
 export OMP_NUM_THREADS=8
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=ERROR
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export PYTORCH_CUDA_MEMORY_FRACTION=0.95
 
-# Configuration
-CONFIG_FILE="configs/server_training.config"
-WORK_DIR="saved/server_single_gpu"
-
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --config)
-            CONFIG_FILE="$2"
-            shift 2
-            ;;
-        --work_dir)
-            WORK_DIR="$2"
-            shift 2
-            ;;
-        --stage)
-            STAGE_ARG="--stage $2"
-            shift 2
-            ;;
-        --resume)
-            RESUME_ARG="--resume $2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
-            ;;
-    esac
-done
-
-echo "Configuration: $CONFIG_FILE"
-echo "Work Directory: $WORK_DIR"
+echo "🚀 Starting server production training..."
+echo "📊 Expected GPU memory usage: ~65-70GB (85% utilization)"
+echo "⏱️  Estimated time: ~7 days (20 epochs x 3 stages)"
 echo ""
 
-# Check if dataset exists
-DATA_ROOT="/scr/user/qinglong/dataset/DTU/dtu_training"
-if [ ! -d "$DATA_ROOT" ]; then
-    echo "⚠️  Warning: Dataset not found at $DATA_ROOT"
-    echo "   Please ensure DTU dataset is downloaded to this location"
-    echo ""
+# Activate conda environment if needed
+if [ -d "/scr/user/qinglong/.conda/envs/mvs2" ]; then
+    source /scr/user/qinglong/.conda/envs/mvs2/bin/activate
+    echo "✅ Conda environment activated"
 fi
 
-# Run training
-python train.py \
-  --config "$CONFIG_FILE" \
-  --work_dir "$WORK_DIR" \
-  --stage auto \
-  ${STAGE_ARG:-} \
-  ${RESUME_ARG:-}
+cd /scr/user/qinglong/projects/UPR-MVS
+
+echo ""
+echo "📋 Configuration Summary:"
+echo "   - Config: configs/server_training.config"
+echo "   - Batch Size: 12 (Stage A), 8 (Stage B), 6 (Stage C)"
+echo "   - Gradient Accumulation: 3 steps"
+echo "   - Image Size: 1024x1280"
+echo "   - Views: 5"
+echo "   - Epochs: 20 per stage"
+echo "   - D bins: 256 (improved from 64)"
+echo ""
+
+# Start training with automatic 3-stage execution
+echo "🎯 Starting automatic 3-stage training..."
+echo "   Stage A: Coarse Depth Pretraining"
+echo "   Stage B: Point Refiner Training"
+echo "   Stage C: Joint Fine-tuning"
+echo ""
+
+torchrun --nproc_per_node=1 train.py \
+    --config configs/server_training.config \
+    --work_dir saved/server_single_gpu \
+    --stage auto \
+    --launcher pytorch
 
 echo ""
 echo "========================================"
-echo "  Training completed!"
+echo "  ✅ Server training completed!"
 echo "========================================"
 echo ""
-echo "View TensorBoard:"
-echo "  tensorboard --logdir $WORK_DIR/tensorboard"
+echo "📊 Results saved to: saved/server_single_gpu/"
+echo "📈 TensorBoard: tensorboard --logdir saved/server_single_gpu/tensorboard --host 0.0.0.0"
 echo ""

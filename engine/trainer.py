@@ -21,8 +21,15 @@ from models.upr_mvs import UPRMVSModel
 from models.upr_mvs_transformer import UPRMVSTransformerModel
 from utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
 
-# 修复 GradScaler 导入警告
-from torch.cuda.amp import GradScaler
+# 修复 GradScaler 导入警告 - 使用新的 API
+# PyTorch >= 2.0 使用 torch.amp，但 GradScaler 实际在 torch.cuda.amp 中
+# 为了兼容性和避免警告，使用条件导入
+try:
+    # 尝试从新位置导入（PyTorch >= 2.4+）
+    from torch.amp import GradScaler as AmpGradScaler  # type: ignore
+except (ImportError, TypeError):
+    # 回退到旧位置（PyTorch < 2.4）
+    from torch.cuda.amp import GradScaler as AmpGradScaler  # type: ignore
 
 
 def set_requires_grad(module: nn.Module, enabled: bool) -> None:
@@ -143,8 +150,24 @@ def build_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]) ->
 
 
 def build_grad_scaler(enabled: bool) -> Any:
-    # 使用已导入的 GradScaler
-    return GradScaler(enabled=enabled)
+    # 修复 GradScaler API 警告
+    # PyTorch >= 2.4: 使用 torch.amp.GradScaler('cuda', ...)
+    # PyTorch < 2.4: 使用 torch.cuda.amp.GradScaler(...)
+    try:
+        # 尝试新 API（需要检查是否接受 device_type 参数）
+        import inspect
+        sig = inspect.signature(AmpGradScaler.__init__)
+        params = list(sig.parameters.keys())
+        
+        if 'device_type' in params:
+            # 新 API: torch.amp.GradScaler(device_type='cuda', enabled=...)
+            return AmpGradScaler(device_type='cuda', enabled=enabled)  # type: ignore
+        else:
+            # 旧 API: torch.cuda.amp.GradScaler(enabled=...)
+            return AmpGradScaler(enabled=enabled)  # type: ignore
+    except Exception:
+        # 如果出错，回退到最简单的用法
+        return AmpGradScaler(enabled=enabled)  # type: ignore
 
 
 def autocast_context(device: torch.device, amp_dtype: str) -> Any:

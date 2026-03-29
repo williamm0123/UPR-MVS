@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 import torch
@@ -19,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.dtu import build_dtu_dataset
 from engine.checkpoint_io import load_checkpoint, resolve_resume_path
-from engine.ddp_utils import cleanup_distributed, init_distributed_mode, is_main_process, synchronize
+from engine.ddp_utils import cleanup_distributed, init_distributed_mode, is_main_process, synchronize, unwrap_model
 from engine.trainer import (
     UPRMVSTrainer,
     build_grad_scaler,
@@ -204,10 +205,52 @@ def update_config_for_stage(config: dict[str, Any], stage_name: str) -> dict[str
 
 def main() -> None:
     args = parse_args()
+    total_start = time.time()
+    
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = (PROJECT_ROOT / config_path).resolve()
+    
+    print(f"\n{'='*60}")
+    print(f"Starting UPR-MVS Training")
+    print(f"{'='*60}")
+    
+    # Detect GPU and recommend configuration
+    print(f"[0/12] Environment Detection...")
+    step_start = time.time()
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(f"           ✓ Detected GPU: {gpu_name} ({gpu_memory:.1f} GB)")
+        
+        # Auto-detect environment
+        if "5060Ti" in gpu_name or "5060 Ti" in gpu_name or gpu_memory < 20:
+            print(f"           ⚠️  Local development environment detected")
+            print(f"           💡 Recommendation: Use configs/local_training.config")
+            print(f"           📊 Expected memory usage: ~12-15GB")
+        elif "A100" in gpu_name and gpu_memory >= 70:
+            print(f"           ✅ Server production environment detected")
+            print(f"           💡 Recommendation: Use configs/server_training.config")
+            print(f"           📊 Expected memory usage: ~65-70GB (85% utilization)")
+    else:
+        print(f"           ⚠️  CUDA not available, running on CPU")
+    
+    print(f"      ✓ Environment check completed ({time.time() - step_start:.2f}s)\n")
+    
+    print(f"[1/12] Loading configuration...")
+    step_start = time.time()
     config = load_config(args.config)
+    print(f"      ✓ Config loaded ({time.time() - step_start:.2f}s)")
+    
+    # Print optimization info
+    print(f"\n🔧 Optimization Settings:")
+    print(f"   - Gradient Checkpointing: {'Enabled' if config['model'].get('use_checkpoint', False) else 'Disabled'}")
+    print(f"   - AMP Dtype: {config['train'].get('amp_dtype', 'fp16')}")
+    print(f"   - Num Workers: {config['train'].get('num_workers', 4)}")
+    print(f"   - CVT D bins: {config['model']['cvt'].get('d_bins', 64)}")
+    print(f"   - Image Size: {config['data'].get('img_h', 1024)}x{config['data'].get('img_w', 1280)}")
+    print(f"   - Views: {config['data'].get('n_views', 5)}")
+    
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,6 +271,8 @@ def main() -> None:
         print(f"Starting Stage {stage_idx + 1}/{len(stages_to_run)}: {stage_name.upper()}")
         print(f"{'='*60}\n")
         
+        stage_start = time.time()
+        
         # Create stage-specific work directory
         if len(stages_to_run) > 1:
             stage_work_dir = work_dir / stage_name
@@ -239,10 +284,14 @@ def main() -> None:
         stage_config = update_config_for_stage(config.copy(), stage_name)
         
         # Initialize distributed mode
+        print(f"[{stage_name}] Initializing distributed mode...")
+        step_start = time.time()
         ddp_cfg = init_distributed_mode(
             launcher=launcher,
             backend=str(stage_config.get("ddp", {}).get("backend", "nccl")),
         )
+        print(f"           ✓ Distributed initialized ({time.time() - step_start:.2f}s)")
+        
         set_seed(int(stage_config["train"].get("seed", 42)), ddp_cfg.rank)
 
         if is_main_process():
@@ -250,6 +299,9 @@ def main() -> None:
             with resolved_config_path.open("w", encoding="utf-8") as handle:
                 yaml.safe_dump(stage_config, handle, sort_keys=False)
 
+        # Build datasets
+        print(f"[{stage_name}] Building datasets...")
+        step_start = time.time()
         train_dataset = build_dtu_dataset(
             stage_config["data"],
             split="train",
@@ -263,9 +315,14 @@ def main() -> None:
             project_root=PROJECT_ROOT,
             config_dir=config_path.parent,
         )
+        print(f"           ✓ Datasets built ({time.time() - step_start:.2f}s)")
 
         batch_size = resolve_train_batch_size(stage_config["train"])
         num_workers = int(stage_config["train"].get("num_workers", 4))
+        
+        # Build dataloaders
+        print(f"[{stage_name}] Building dataloaders (batch_size={batch_size}, workers={num_workers})...")
+        step_start = time.time()
         train_loader, train_sampler = build_dataloader(
             dataset=train_dataset,
             batch_size=batch_size,
@@ -280,26 +337,71 @@ def main() -> None:
             distributed=ddp_cfg.distributed,
             shuffle=False,
         )
+        print(f"           ✓ Dataloaders built ({time.time() - step_start:.2f}s)")
 
+        # Build model
+        print(f"[{stage_name}] Building model...")
+        step_start = time.time()
+        
+        # Clear memory before building large model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         model = build_model(stage_config).to(ddp_cfg.device)
+        print(f"           ✓ Model built ({time.time() - step_start:.2f}s)")
+        
         configure_trainable_modules(model, str(stage_config["train"].get("stage", "coarse_only")).lower())
         
         # Apply stage-specific model configurations
         apply_stage_config(model, stage_config, stage_name, ddp_cfg.device)
         
         if ddp_cfg.distributed:
+            print(f"[{stage_name}] Wrapping with DDP...")
+            step_start = time.time()
             model = DDP(
                 model,
                 device_ids=[ddp_cfg.device.index] if ddp_cfg.device.type == "cuda" else None,
                 broadcast_buffers=bool(stage_config.get("ddp", {}).get("broadcast_buffers", False)),
                 find_unused_parameters=bool(stage_config.get("ddp", {}).get("find_unused_parameters", False)),
             )
+            print(f"           ✓ DDP wrapped ({time.time() - step_start:.2f}s)")
 
+        # Build loss, optimizer, scheduler
+        print(f"[{stage_name}] Building criterion...")
+        step_start = time.time()
         criterion = UPRMVSLoss(stage_config["loss"]).to(ddp_cfg.device)
+        print(f"           ✓ Criterion built ({time.time() - step_start:.2f}s)")
+        
+        print(f"[{stage_name}] Building optimizer...")
+        step_start = time.time()
         optimizer = build_optimizer(model, stage_config)
+        print(f"           ✓ Optimizer built ({time.time() - step_start:.2f}s)")
+        
+        print(f"[{stage_name}] Building scheduler...")
+        step_start = time.time()
         scheduler = build_scheduler(optimizer, stage_config)
+        print(f"           ✓ Scheduler built ({time.time() - step_start:.2f}s)")
+        
+        print(f"[{stage_name}] Building GradScaler...")
+        step_start = time.time()
         use_fp16_scaler = str(stage_config["train"].get("amp_dtype", "bf16")).lower() == "fp16" and ddp_cfg.device.type == "cuda"
         scaler = build_grad_scaler(enabled=use_fp16_scaler)
+        print(f"           ✓ GradScaler built ({time.time() - step_start:.2f}s)")
+
+        # Build trainer
+        print(f"[{stage_name}] Building trainer...")
+        step_start = time.time()
+        trainer = UPRMVSTrainer(
+            model=model,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            device=ddp_cfg.device,
+            train_cfg=stage_config["train"],
+            work_dir=stage_work_dir,
+        )
+        print(f"           ✓ Trainer built ({time.time() - step_start:.2f}s)")
 
         # Determine resume path for this stage
         if args.resume and stage_idx == 0:
@@ -317,6 +419,9 @@ def main() -> None:
         else:
             resume_path = args.resume
         
+        # Load checkpoint
+        print(f"[{stage_name}] Loading checkpoint (resume_path={resume_path[:80] if resume_path else 'None'})...")
+        step_start = time.time()
         resume_mode = resolve_resume_mode(resume_path, stage_work_dir, args.resume_mode if stage_idx == 0 else "model_only")
         start_epoch, best_metric = load_checkpoint(
             checkpoint_path=resume_path,
@@ -327,17 +432,7 @@ def main() -> None:
             device=ddp_cfg.device,
             load_training_state=resume_mode == "full",
         )
-
-        trainer = UPRMVSTrainer(
-            model=model,
-            criterion=criterion,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            device=ddp_cfg.device,
-            train_cfg=stage_config["train"],
-            work_dir=stage_work_dir,
-        )
+        print(f"           ✓ Checkpoint loaded ({time.time() - step_start:.2f}s)")
 
         if args.eval_only:
             metrics = trainer.validate(val_loader)
@@ -348,6 +443,9 @@ def main() -> None:
             cleanup_distributed()
             return
 
+        # Start training
+        print(f"\n[{stage_name}] Starting training loop...")
+        step_start = time.time()
         trainer.fit(
             train_loader=train_loader,
             val_loader=val_loader,
@@ -356,14 +454,27 @@ def main() -> None:
             max_epochs=int(stage_config["train"]["epochs"]),
             best_metric=best_metric,
         )
+        print(f"           ✓ Training completed ({time.time() - step_start:.2f}s)")
+        
         trainer.close()
         
         # Cleanup distributed environment for this stage
         synchronize()
+        
+        # Clear GPU memory before next stage
+        if torch.cuda.is_available():
+            print(f"\n[{stage_name}] Cleaning up GPU memory...")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            current_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)
+            print(f"           ✓ Peak memory for {stage_name}: {current_memory:.2f} GB")
+            torch.cuda.reset_peak_memory_stats()
+        
         cleanup_distributed()
         
+        stage_time = time.time() - stage_start
         print(f"\n{'='*60}")
-        print(f"Stage {stage_name.upper()} completed!")
+        print(f"Stage {stage_name.upper()} completed in {stage_time:.2f}s!")
         print(f"{'='*60}\n")
         
         # Re-initialize for next stage if needed
@@ -375,6 +486,11 @@ def main() -> None:
                     launcher=launcher,
                     backend=str(stage_config.get("ddp", {}).get("backend", "nccl")),
                 )
+    
+    total_time = time.time() - total_start
+    print(f"\n{'='*60}")
+    print(f"All stages completed! Total time: {total_time:.2f}s")
+    print(f"{'='*60}\n")
 
 if __name__ == "__main__":
     main()
