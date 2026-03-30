@@ -277,8 +277,10 @@ class UPRMVSTransformerModel(nn.Module):
                         align_corners=False,
                     )
                 
-                # Update outputs with refined depth
-                coarse_outputs["coarse_depth"] = coarse_depth + refined_depth
+                # DepthRefinementHead already returns coarse_depth + residual.
+                # Adding coarse_depth again here would double-count the base depth
+                # and can collapse stage-A supervision into a near-constant map.
+                coarse_outputs["coarse_depth"] = refined_depth
                 coarse_outputs["depth_refined"] = True
 
         if train_stage == "coarse_only":
