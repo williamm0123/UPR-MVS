@@ -23,6 +23,7 @@ logs/*
 *.ckpt
 *.tar
 *.md
+*.ignore
 
 # OS/editor junk
 .DS_Store
