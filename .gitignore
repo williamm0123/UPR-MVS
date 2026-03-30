@@ -9,11 +9,13 @@ local_smoke_val.txt
 local_smoke_run/
 
 # Training outputs
-saved/
+saved/*
+!saved/.gitkeep
 checkpoints/
 runs/
 log/
-logs/
+logs/*
+!logs/.gitkeep
 
 # Optional model/data artifacts
 *.pth
