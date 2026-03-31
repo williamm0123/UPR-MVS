@@ -163,7 +163,7 @@ class DPT(nn.Module):
         patch_start_idx: int,
         chunk_size: int = 8,
         **kwargs,
-    ) -> Dict:
+    ) -> TyDict[str, torch.Tensor]:
         """
         Args:
             feats: List of 4 entries, each entry is a tensor like [B, S, T, C] (or the 0th element of tuple/list is that tensor).
