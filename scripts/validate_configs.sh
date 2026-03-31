@@ -24,7 +24,14 @@ echo ""
 
 python3 - <<'PY'
 from pathlib import Path
-import yaml
+import sys
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    print("❌ Missing Python dependency: PyYAML")
+    print("   Install with: pip install pyyaml")
+    sys.exit(1)
 
 configs = ['configs/local_training.config', 'configs/server_training.config']
 for cfg in configs:
@@ -51,10 +58,10 @@ for cfg in configs:
         assert 'grad_accum_steps' in stage_cfg, f'Missing grad_accum_steps in {stage}'
         effective_batch = stage_cfg['batch_size_per_gpu'] * stage_cfg['grad_accum_steps']
         print(
-            f'    {stage}: mode={stage_cfg[\"name\"]}, '
-            f'batch={stage_cfg[\"batch_size_per_gpu\"]}, '
-            f'accum={stage_cfg[\"grad_accum_steps\"]}, '
-            f'effective={effective_batch}'
+            f"    {stage}: mode={stage_cfg['name']}, "
+            f"batch={stage_cfg['batch_size_per_gpu']}, "
+            f"accum={stage_cfg['grad_accum_steps']}, "
+            f"effective={effective_batch}"
         )
 
     print(f'  ✓ {cfg} validation passed')
