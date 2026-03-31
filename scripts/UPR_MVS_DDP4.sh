@@ -29,7 +29,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 torchrun --nproc_per_node=4 train.py \
   --config configs/server_training.config \
   --work_dir "$WORK_DIR" \
-  --stage auto \
+  --stage curriculum \
   --launcher pytorch
 
 echo ""

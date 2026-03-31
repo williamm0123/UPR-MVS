@@ -1,3 +1,3 @@
-from .dinov3 import DinoV3Backbone
+from .depth_anything3 import DepthAnything3Backbone, DepthAnything3MetricPrior
 
-__all__ = ["DinoV3Backbone"]
+__all__ = ["DepthAnything3Backbone", "DepthAnything3MetricPrior"]

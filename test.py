@@ -22,7 +22,6 @@ from engine.ddp_utils import cleanup_distributed, init_distributed_mode, is_main
 from engine.trainer import autocast_context, configure_trainable_modules
 from models.losses import UPRMVSLoss
 from models.losses.consistency import build_sparse_gt_points
-from models.upr_mvs import UPRMVSModel
 from models.upr_mvs_transformer import UPRMVSTransformerModel
 from utils.metrics import ScalarMeter, format_metrics, sparse_point_cloud_metrics, tensor_dict_to_floats
 
@@ -58,10 +57,7 @@ def set_seed(seed: int, rank: int) -> None:
 
 
 def build_model(config: dict[str, Any]) -> torch.nn.Module:
-    backbone = str(config["model"].get("backbone", "dinov3")).lower()
-    if backbone == "dinov3":
-        return UPRMVSTransformerModel(model_cfg=config["model"])
-    return UPRMVSModel(model_cfg=config["model"])
+    return UPRMVSTransformerModel(model_cfg=config["model"])
 
 
 def build_dataloader(
@@ -148,7 +144,7 @@ def main() -> None:
     )
 
     model = build_model(config).to(ddp_cfg.device)
-    configure_trainable_modules(model, str(config["train"].get("stage", "coarse_only")).lower())
+    configure_trainable_modules(model, str(config["train"].get("stage", "point_refine")).lower())
     if ddp_cfg.distributed:
         model = DDP(
             model,

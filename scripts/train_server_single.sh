@@ -1,6 +1,6 @@
 #!/bin/bash
 # UPR-MVS Server Single-GPU Training Script (A100 80GB)
-# 用于服务器 A100 80GB 单卡三阶段自动训练 - 高精度版本
+# 用于服务器 A100 80GB 单卡 DA3 + point refinement 训练
 
 set -e
 
@@ -16,8 +16,8 @@ export NCCL_DEBUG=ERROR
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "🚀 Starting server production training..."
-echo "📊 Expected GPU memory usage: ~72-82GB (high-precision profile)"
-echo "⏱️  Estimated time: slightly slower, but best depth discretization so far"
+echo "📊 Expected GPU memory usage: 取决于 DA3 分辨率与 point 数量"
+echo "⏱️  Estimated time: 主要由 DA3 prior 前向和 point branch 决定"
 echo ""
 
 # Activate conda environment if needed
@@ -31,26 +31,23 @@ cd /scr/user/qinglong/projects/UPR-MVS
 echo ""
 echo "📋 Configuration Summary:"
 echo "   - Config: configs/server_training.config"
-echo "   - Batch Size: 16 (Stage A), 8 (Stage B), 4 (Stage C)"
-echo "   - Gradient Accumulation: 2, 3, 4 steps"
-echo "   - Image Size: 768x1024"
+echo "   - Stage A: point_refine"
+echo "   - Stage B: joint (enable densify)"
+echo "   - Image Size: 756x1008"
 echo "   - Views: 5"
-echo "   - Epochs: 20 per stage"
-echo "   - D bins: 256"
-echo "   - CCFF/CVT dim: 128/128"
+echo "   - Depth Prior: DA3METRIC-LARGE"
 echo ""
 
-# Start training with automatic 3-stage execution
-echo "🎯 Starting automatic 3-stage training..."
-echo "   Stage A: Coarse Depth Pretraining"
-echo "   Stage B: Point Refiner Training"
-echo "   Stage C: Joint Fine-tuning"
+# Start training with single-run curriculum execution
+echo "🎯 Starting single-run curriculum training..."
+echo "   Stage A: Point Refiner Training"
+echo "   Stage B: Joint Training with Densify"
 echo ""
 
 torchrun --nproc_per_node=1 train.py \
     --config configs/server_training.config \
     --work_dir saved/server_single_gpu \
-    --stage auto \
+    --stage curriculum \
     --launcher pytorch
 
 echo ""

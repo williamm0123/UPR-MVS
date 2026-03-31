@@ -1,6 +1,6 @@
 #!/bin/bash
 # UPR-MVS Server Multi-GPU Training Script (DDP)
-# 用于服务器多卡 DDP 并行训练
+# 用于服务器多卡 DA3 + point refinement 并行训练
 
 set -e
 
@@ -47,6 +47,7 @@ echo "   - GPUs: $NUM_GPUS"
 echo "   - DDP: Enabled"
 echo "   - Batch Size: per-GPU value comes from config"
 echo "   - Global Batch: scales with GPU count x grad_accum_steps"
+echo "   - Pipeline: DA3 metric prior + point refinement"
 echo "   - OMP_NUM_THREADS: $OMP_NUM_THREADS per process"
 echo ""
 
@@ -54,7 +55,7 @@ echo ""
 torchrun --nproc_per_node=$NUM_GPUS train.py \
     --config configs/server_training.config \
     --work_dir saved/server_multi_gpu \
-    --stage auto \
+    --stage curriculum \
     --launcher pytorch
 
 echo ""

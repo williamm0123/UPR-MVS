@@ -19,7 +19,6 @@ from datasets.dtu import build_dtu_dataset
 from engine.checkpoint_io import load_checkpoint, resolve_resume_path
 from engine.ddp_utils import move_to_device
 from engine.trainer import configure_trainable_modules
-from models.upr_mvs import UPRMVSModel
 from models.upr_mvs_transformer import UPRMVSTransformerModel
 from utils.pointcloud import filter_valid_points, write_ply_ascii
 
@@ -50,10 +49,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def build_model(config: dict[str, Any]) -> torch.nn.Module:
-    backbone = str(config["model"].get("backbone", "dinov3")).lower()
-    if backbone == "dinov3":
-        return UPRMVSTransformerModel(model_cfg=config["model"])
-    return UPRMVSModel(model_cfg=config["model"])
+    return UPRMVSTransformerModel(model_cfg=config["model"])
 
 
 def main() -> None:
@@ -84,7 +80,7 @@ def main() -> None:
     )
 
     model = build_model(config).to(device)
-    configure_trainable_modules(model, str(config["train"].get("stage", "coarse_only")).lower())
+    configure_trainable_modules(model, str(config["train"].get("stage", "point_refine")).lower())
     checkpoint_path = resolve_resume_path(work_dir, args.checkpoint)
     if not checkpoint_path:
         raise FileNotFoundError("No checkpoint specified and latest.pth was not found in work_dir.")

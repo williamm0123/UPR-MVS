@@ -17,7 +17,6 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 
 from engine.checkpoint_io import save_checkpoint
 from engine.ddp_utils import is_main_process, move_to_device, reduce_dict, unwrap_model
-from models.upr_mvs import UPRMVSModel
 from models.upr_mvs_transformer import UPRMVSTransformerModel
 from utils.metrics import ScalarMeter, format_metrics, tensor_dict_to_floats
 
@@ -43,41 +42,25 @@ def configure_trainable_modules(
     loss_cfg: dict[str, Any] | None = None,
 ) -> None:
     model_unwrapped = unwrap_model(model)
-    if not isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
+    if not isinstance(model_unwrapped, UPRMVSTransformerModel):
         return
 
     model_unwrapped.active_train_stage = train_stage
     loss_cfg = loss_cfg or {}
 
-    # 默认全部训练
-    set_requires_grad(model_unwrapped.backbone, True)
-    set_requires_grad(model_unwrapped.cvt, True)
+    set_requires_grad(model_unwrapped.depth_prior, True)
     set_requires_grad(model_unwrapped.feature_lifter, True)
     set_requires_grad(model_unwrapped.point_refiner, True)
-    if isinstance(model_unwrapped, UPRMVSTransformerModel):
-        if model_unwrapped.use_ccff:
-            set_requires_grad(model_unwrapped.ccff, True)
-        if model_unwrapped.depth_refinement_head is not None:
-            set_requires_grad(model_unwrapped.depth_refinement_head, True)
+    set_requires_grad(model_unwrapped.densifier, True)
 
-    if train_stage == "coarse_only":
-        # 第一阶段：只训练 coarse depth (cvt)，冻结其他模块
-        set_requires_grad(model_unwrapped.backbone, False)
-        set_requires_grad(model_unwrapped.feature_lifter, False)
-        set_requires_grad(model_unwrapped.point_refiner, False)
-    elif train_stage == "point_refine":
-        # 第二阶段：只训练 point 模块，冻结 backbone 和 cvt
-        set_requires_grad(model_unwrapped.backbone, False)
-        set_requires_grad(model_unwrapped.cvt, False)
-        if isinstance(model_unwrapped, UPRMVSTransformerModel):
-            if model_unwrapped.use_ccff:
-                set_requires_grad(model_unwrapped.ccff, False)
-            if model_unwrapped.depth_refinement_head is not None:
-                set_requires_grad(model_unwrapped.depth_refinement_head, False)
-    elif train_stage == "joint":
-        # 第三阶段：全部训练，但 coarse 使用较小学习率
-        # 学习率调整在 optimizer 中通过 joint_coarse_lr_scale 实现
-        pass
+    if train_stage not in {"point_refine", "joint"}:
+        raise ValueError(f"Unsupported train stage for DA3-only pipeline: {train_stage}")
+
+    depth_anything_cfg = {}
+    if isinstance(getattr(model_unwrapped, "model_cfg", None), dict):
+        depth_anything_cfg = getattr(model_unwrapped, "model_cfg", {}).get("depth_anything3", {})
+    if not bool(depth_anything_cfg.get("trainable", False)):
+        set_requires_grad(model_unwrapped.depth_prior, False)
 
     point_refiner = getattr(model_unwrapped, "point_refiner", None)
     if point_refiner is not None:
@@ -90,10 +73,15 @@ def configure_trainable_modules(
             set_requires_grad(alpha_head, False)
 
 
-def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
+def build_optimizer(
+    model: nn.Module,
+    config: dict[str, Any],
+    *,
+    include_all_params: bool = False,
+) -> torch.optim.Optimizer:
     model_unwrapped = unwrap_model(model)
     optim_cfg = config["optim"]
-    train_stage = str(config["train"].get("stage", "coarse_only")).lower()
+    train_stage = str(config["train"].get("stage", "point_refine")).lower()
     weight_decay = float(optim_cfg.get("weight_decay", 0.0))
     
     # 修复类型错误：显式转换为 tuple[float, float]
@@ -101,25 +89,39 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
     betas: tuple[float, float] = (float(betas_list[0]), float(betas_list[1]))
 
     def collect_params(module: nn.Module) -> list[Tensor]:
-        return [parameter for parameter in module.parameters() if parameter.requires_grad]
+        return [
+            parameter
+            for parameter in module.parameters()
+            if include_all_params or parameter.requires_grad
+        ]
 
     param_groups: list[dict[str, Any]] = []
-    if isinstance(model_unwrapped, (UPRMVSModel, UPRMVSTransformerModel)):
-        coarse_scale = float(optim_cfg.get("joint_coarse_lr_scale", 0.2)) if train_stage == "joint" else 1.0
-        backbone_params = collect_params(model_unwrapped.backbone)
-        coarse_params = collect_params(model_unwrapped.cvt)
-        if isinstance(model_unwrapped, UPRMVSTransformerModel):
-            if model_unwrapped.use_ccff:
-                coarse_params.extend(collect_params(model_unwrapped.ccff))
-            if model_unwrapped.depth_refinement_head is not None:
-                coarse_params.extend(collect_params(model_unwrapped.depth_refinement_head))
-        point_params = collect_params(model_unwrapped.feature_lifter) + collect_params(model_unwrapped.point_refiner)
-        if backbone_params:
-            param_groups.append({"params": backbone_params, "lr": float(optim_cfg.get("lr_backbone", 1.0e-4))})
-        if coarse_params:
-            param_groups.append({"params": coarse_params, "lr": float(optim_cfg.get("lr_coarse", 2.0e-4)) * coarse_scale})
-        if point_params:
-            param_groups.append({"params": point_params, "lr": float(optim_cfg.get("lr_point", 4.0e-4))})
+    if not isinstance(model_unwrapped, UPRMVSTransformerModel):
+        raise TypeError(
+            "build_optimizer expects a UPRMVSTransformerModel in the DA3-only pipeline, "
+            f"got {type(model_unwrapped).__name__}."
+        )
+
+    prior_scale = float(optim_cfg.get("joint_prior_lr_scale", 1.0)) if train_stage == "joint" else 1.0
+    prior_params = collect_params(model_unwrapped.depth_prior)
+    point_params = collect_params(model_unwrapped.feature_lifter) + collect_params(model_unwrapped.point_refiner)
+    point_params.extend(collect_params(model_unwrapped.densifier))
+    if prior_params:
+        param_groups.append(
+            {
+                "name": "depth_prior",
+                "params": prior_params,
+                "lr": float(optim_cfg.get("lr_prior", 0.0)) * prior_scale,
+            }
+        )
+    if point_params:
+        param_groups.append(
+            {
+                "name": "point",
+                "params": point_params,
+                "lr": float(optim_cfg.get("lr_point", 4.0e-4)),
+            }
+        )
 
     if not param_groups:
         raise RuntimeError("No trainable parameters found when building the optimizer.")
@@ -128,6 +130,21 @@ def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opt
     if name == "adamw":
         return torch.optim.AdamW(param_groups, weight_decay=weight_decay, betas=betas)
     raise ValueError(f"Unsupported optimizer: {name}")
+
+
+def update_optimizer_lrs(optimizer: torch.optim.Optimizer, config: dict[str, Any]) -> None:
+    optim_cfg = config["optim"]
+    train_stage = str(config["train"].get("stage", "point_refine")).lower()
+    prior_scale = float(optim_cfg.get("joint_prior_lr_scale", 1.0)) if train_stage == "joint" else 1.0
+    lr_by_group = {
+        "depth_prior": float(optim_cfg.get("lr_prior", 0.0)) * prior_scale,
+        "point": float(optim_cfg.get("lr_point", 4.0e-4)),
+    }
+    fallback_order = ("depth_prior", "point")
+    for idx, group in enumerate(optimizer.param_groups):
+        group_name = str(group.get("name", fallback_order[min(idx, len(fallback_order) - 1)]))
+        if group_name in lr_by_group:
+            group["lr"] = lr_by_group[group_name]
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]) -> Any:
@@ -149,8 +166,7 @@ def build_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]) ->
         if warmup_epochs > 0:
             # 使用最大的学习率作为基准
             max_lr = max(
-                float(optim_cfg.get("lr_backbone", 1.0e-4)),
-                float(optim_cfg.get("lr_coarse", 2.0e-4)),
+                float(optim_cfg.get("lr_prior", 0.0)),
                 float(optim_cfg.get("lr_point", 4.0e-4))
             )
             warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -235,9 +251,7 @@ class UPRMVSTrainer:
         self.device = device
         self.train_cfg = train_cfg
         self.work_dir = work_dir
-        default_monitor_key = "depth_abs_error" if str(train_cfg.get("stage", "coarse_only")).lower() == "coarse_only" else "point_abs_error"
-        monitor_key = str(train_cfg.get("monitor_key", "auto"))
-        self.monitor_key = default_monitor_key if monitor_key == "auto" else monitor_key
+        self.monitor_key = self._resolve_monitor_key(train_cfg)
         self.global_step = 0
 
         tensorboard_cfg = train_cfg.get("tensorboard", {}) if isinstance(train_cfg.get("tensorboard", {}), dict) else {}
@@ -253,6 +267,35 @@ class UPRMVSTrainer:
                 warnings.warn("TensorBoard is enabled but the tensorboard package is not installed.", stacklevel=2)
             else:
                 self.tb_writer = SummaryWriter(log_dir=str(self.tb_log_dir))
+
+    @staticmethod
+    def _resolve_monitor_key(train_cfg: dict[str, Any]) -> str:
+        default_monitor_key = "point_abs_error"
+        monitor_key = str(train_cfg.get("monitor_key", "auto"))
+        return default_monitor_key if monitor_key == "auto" else monitor_key
+
+    def update_runtime(
+        self,
+        *,
+        train_cfg: dict[str, Any] | None = None,
+        scheduler: Any | None = None,
+        work_dir: Path | None = None,
+    ) -> None:
+        if train_cfg is not None:
+            self.train_cfg = train_cfg
+            self.monitor_key = self._resolve_monitor_key(train_cfg)
+            tensorboard_cfg = (
+                train_cfg.get("tensorboard", {})
+                if isinstance(train_cfg.get("tensorboard", {}), dict)
+                else {}
+            )
+            self.tb_scalar_interval = int(tensorboard_cfg.get("scalar_interval", train_cfg.get("log_interval", 20)))
+            self.tb_image_interval = int(tensorboard_cfg.get("image_interval", 200))
+            self.tb_feature_stage = str(tensorboard_cfg.get("feature_stage", "stage2"))
+        if scheduler is not None:
+            self.scheduler = scheduler
+        if work_dir is not None:
+            self.work_dir = work_dir
 
     @staticmethod
     def _normalize_image(image: Tensor) -> Tensor:
@@ -489,4 +532,3 @@ class UPRMVSTrainer:
                     monitor_key=self.monitor_key,
                     tag=f"epoch_{epoch:03d}",
                 )
-        self.close()
