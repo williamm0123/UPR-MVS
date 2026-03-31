@@ -38,6 +38,7 @@ echo "   - Stage: stage_b"
 echo "   - Mode: joint"
 echo "   - Work Dir: $WORK_DIR"
 echo "   - Resume: $RESUME"
+echo "   - Depth Prior: depth-anything/da3metric-large"
 echo ""
 
 torchrun --nproc_per_node=1 train.py \

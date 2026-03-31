@@ -23,6 +23,7 @@ echo "🔍 Validating configurations..."
 echo ""
 
 python3 - <<'PY'
+import os
 from pathlib import Path
 import sys
 
@@ -44,12 +45,17 @@ for cfg in configs:
     assert 'training_stages' in config, 'Missing training_stages config'
     assert list(config['training_stages'].keys()) == ['stage_a', 'stage_b'], 'Expected exactly stage_a/stage_b'
 
-    prior_path = Path(config['model']['depth_anything3']['pretrained'])
-    print(f'    depth_prior = {prior_path}')
-    if prior_path.exists():
-        print('    ✓ DA3 checkpoint path exists')
+    prior_ref = str(config['model']['depth_anything3']['pretrained']).strip()
+    prior_path = Path(os.path.expanduser(os.path.expandvars(prior_ref)))
+    print(f'    depth_prior = {prior_ref}')
+    if prior_path.is_file():
+        print('    ✓ DA3 local checkpoint file exists')
+    elif prior_path.is_dir():
+        print('    ✓ DA3 local model directory exists')
+    elif '/' in prior_ref and not prior_ref.startswith(('/', './', '../', '~')):
+        print('    ✓ Treating depth_prior as a Hugging Face model id')
     else:
-        print('    ⚠ DA3 checkpoint path does not exist yet; set it before training')
+        print('    ⚠ DA3 checkpoint reference does not resolve locally; check the path or model id')
 
     for stage in ['stage_a', 'stage_b']:
         stage_cfg = config['training_stages'][stage]
@@ -73,7 +79,7 @@ echo "  ✅ Validation finished"
 echo "========================================"
 echo ""
 echo "📊 Next steps:"
-echo "  1. Fill model.depth_anything3.pretrained with a real DA3METRIC-LARGE checkpoint"
+echo "  1. Set model.depth_anything3.pretrained to a local checkpoint, local model dir, or HF id"
 echo "  2. Run connectivity test with: bash scripts/train_server_stage_a.sh"
 echo "  3. Run full single-GPU curriculum with: bash scripts/train_server_single.sh"
 echo ""

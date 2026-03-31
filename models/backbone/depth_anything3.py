@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -27,6 +28,146 @@ def _robust_channel_scale(values: Tensor, eps: float = 1.0e-6) -> Tensor:
     batch_size = values.shape[0]
     flat = values.reshape(batch_size, -1)
     return flat.median(dim=1).values.clamp_min(eps).view(batch_size, 1, 1, 1)
+
+
+def _expand_reference(reference: str | Path) -> str:
+    return os.path.expandvars(os.path.expanduser(str(reference).strip()))
+
+
+def _looks_like_hf_repo_id(reference: str) -> bool:
+    if not reference:
+        return False
+    if reference.startswith(("/", "./", "../", "~")):
+        return False
+    path = Path(reference)
+    if path.suffix:
+        return False
+    parts = [part for part in reference.split("/") if part]
+    return len(parts) == 2
+
+
+def _resolve_local_model_artifact(model_dir: Path) -> Path | None:
+    for filename in ("model.safetensors", "pytorch_model.bin", "model.bin"):
+        candidate = model_dir / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _download_hf_model_artifact(repo_id: str) -> Path:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Loading a Hugging Face DA3 model id requires `huggingface_hub`. "
+            "Install it or provide a local checkpoint file."
+        ) from exc
+
+    last_error: Exception | None = None
+    for filename in ("model.safetensors", "pytorch_model.bin", "model.bin"):
+        try:
+            return Path(hf_hub_download(repo_id=repo_id, filename=filename))
+        except Exception as exc:  # pragma: no cover - depends on runtime/network
+            last_error = exc
+    raise FileNotFoundError(
+        f"Could not resolve a loadable DA3 artifact from Hugging Face repo '{repo_id}'. "
+        "Expected one of: model.safetensors, pytorch_model.bin, model.bin."
+    ) from last_error
+
+
+def _resolve_pretrained_artifact(reference: str | Path) -> tuple[Path, str]:
+    expanded = _expand_reference(reference)
+    path = Path(expanded)
+    if path.is_file():
+        return path, f"local checkpoint file '{path}'"
+
+    if path.is_dir():
+        artifact = _resolve_local_model_artifact(path)
+        if artifact is None:
+            raise FileNotFoundError(
+                f"Depth Anything 3 model directory '{path}' does not contain a supported artifact. "
+                "Expected one of: model.safetensors, pytorch_model.bin, model.bin."
+            )
+        return artifact, f"local model directory '{path}'"
+
+    if _looks_like_hf_repo_id(expanded):
+        artifact = _download_hf_model_artifact(expanded)
+        return artifact, f"Hugging Face repo '{expanded}'"
+
+    raise FileNotFoundError(
+        "Depth Anything 3 checkpoint could not be resolved from "
+        f"'{reference}'. Provide one of: "
+        "1) a local .pth/.pt/.bin/.safetensors file, "
+        "2) a local model directory containing model.safetensors, or "
+        "3) a Hugging Face repo id such as 'depth-anything/da3metric-large'."
+    )
+
+
+def _load_state_dict_payload(path: Path) -> dict[str, Any]:
+    if path.suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Loading a .safetensors DA3 artifact requires `safetensors`. "
+                "Install it or use a .pth checkpoint."
+            ) from exc
+        return load_file(str(path), device="cpu")
+    return torch.load(path, map_location="cpu")
+
+
+def _extract_state_dict(state: Any) -> dict[str, Tensor]:
+    if isinstance(state, dict):
+        for key in ("state_dict", "model"):
+            candidate = state.get(key)
+            if isinstance(candidate, dict):
+                state = candidate
+                break
+    if not isinstance(state, dict):
+        raise TypeError(f"Unsupported Depth Anything 3 checkpoint format: {type(state)!r}")
+    return state
+
+
+def _normalize_checkpoint_key(key: str) -> str | None:
+    normalized = key
+    while normalized.startswith("module."):
+        normalized = normalized[len("module.") :]
+    while normalized.startswith("model."):
+        normalized = normalized[len("model.") :]
+
+    if normalized.startswith("net."):
+        normalized = "backbone." + normalized[len("net.") :]
+    if normalized.startswith("more_mlps."):
+        normalized = "backbone." + normalized[len("more_mlps.") :]
+    if normalized.startswith("fc_rot."):
+        normalized = "fc_qvec." + normalized[len("fc_rot.") :]
+
+    normalized = normalized.replace(".net.", ".backbone.")
+    normalized = normalized.replace(".more_mlps.", ".backbone.")
+    normalized = normalized.replace(".fc_rot.", ".fc_qvec.")
+    normalized = normalized.replace(".camera_token_extra", ".camera_token")
+    normalized = normalized.replace("output_conv2_additional.sky_mask", "sky_output_conv2")
+
+    if normalized.startswith("backbone.encoder.") or normalized.startswith("depth_head.depth_head."):
+        return normalized
+    if normalized.startswith("backbone."):
+        return "backbone.encoder." + normalized[len("backbone.") :]
+    if normalized.startswith("head."):
+        return "depth_head.depth_head." + normalized[len("head.") :]
+    return None
+
+
+def _build_loadable_state_dict(state_dict: dict[str, Tensor], model_state: dict[str, Tensor]) -> dict[str, Tensor]:
+    loadable: dict[str, Tensor] = {}
+    for key, value in state_dict.items():
+        if not isinstance(value, torch.Tensor):
+            continue
+        normalized_key = _normalize_checkpoint_key(key)
+        if normalized_key is None:
+            continue
+        if normalized_key in model_state and model_state[normalized_key].shape == value.shape:
+            loadable[normalized_key] = value
+    return loadable
 
 
 class DepthAnything3Backbone(nn.Module):
@@ -200,20 +341,6 @@ class DepthAnything3MetricHead(nn.Module):
         }
 
 
-def _convert_metric_checkpoint_state_dict(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    converted = {"module." + key: value for key, value in state_dict.items()}
-    converted = {key.replace("module.", "model."): value for key, value in converted.items()}
-    converted = {key.replace(".net.", ".backbone."): value for key, value in converted.items()}
-    converted = {key.replace(".camera_token_extra", ".camera_token"): value for key, value in converted.items()}
-    converted = {key.replace(".more_mlps.", ".backbone."): value for key, value in converted.items()}
-    converted = {key.replace(".fc_rot.", ".fc_qvec."): value for key, value in converted.items()}
-    converted = {
-        key.replace("output_conv2_additional.sky_mask", "sky_output_conv2"): value
-        for key, value in converted.items()
-    }
-    return converted
-
-
 class DepthAnything3MetricPrior(nn.Module):
     def __init__(self, prior_cfg: dict[str, Any]) -> None:
         super().__init__()
@@ -243,47 +370,24 @@ class DepthAnything3MetricPrior(nn.Module):
         pretrained = prior_cfg.get("pretrained")
         if not pretrained:
             raise ValueError(
-                "model.depth_anything3.pretrained must point to a DA3METRIC-LARGE checkpoint. "
-                "The prior should not be randomly initialized."
+                "model.depth_anything3.pretrained must resolve to a DA3 weight source. "
+                "Supported inputs are: a local checkpoint file, a local model directory, "
+                "or a Hugging Face repo id such as 'depth-anything/da3metric-large'."
             )
         self.load_pretrained(pretrained)
 
-    def load_pretrained(self, checkpoint_path: str | Path) -> None:
-        path = Path(checkpoint_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"Depth Anything 3 checkpoint not found: {path}")
-
-        state = torch.load(path, map_location="cpu")
-        if isinstance(state, dict):
-            for key in ("state_dict", "model"):
-                candidate = state.get(key)
-                if isinstance(candidate, dict):
-                    state = candidate
-                    break
-        if not isinstance(state, dict):
-            raise TypeError(f"Unsupported Depth Anything 3 checkpoint format in {path}")
-
-        converted = _convert_metric_checkpoint_state_dict(state)
-        loadable: dict[str, Tensor] = {}
+    def load_pretrained(self, checkpoint_reference: str | Path) -> None:
+        artifact_path, source_desc = _resolve_pretrained_artifact(checkpoint_reference)
+        state = _extract_state_dict(_load_state_dict_payload(artifact_path))
         model_state = self.state_dict()
-        for key, value in converted.items():
-            if not isinstance(value, torch.Tensor):
-                continue
-            if not key.startswith("model."):
-                continue
-            normalized_key = key[len("model.") :]
-            if normalized_key.startswith("head."):
-                normalized_key = "depth_head.depth_head." + normalized_key[len("head.") :]
-            elif normalized_key.startswith("backbone."):
-                normalized_key = "backbone.encoder." + normalized_key[len("backbone.") :]
-            else:
-                continue
-            if normalized_key in model_state and model_state[normalized_key].shape == value.shape:
-                loadable[normalized_key] = value
+        loadable = _build_loadable_state_dict(state, model_state)
 
         missing, unexpected = self.load_state_dict(loadable, strict=False)
         if not loadable:
-            raise RuntimeError(f"No compatible Depth Anything 3 weights were loaded from {path}")
+            raise RuntimeError(
+                "No compatible Depth Anything 3 weights were loaded from "
+                f"{source_desc} ({artifact_path})."
+            )
         if unexpected:
             raise RuntimeError(f"Unexpected keys while loading Depth Anything 3 checkpoint: {unexpected[:10]}")
         ignored_missing = [key for key in missing if "backbone.out_proj" in key]

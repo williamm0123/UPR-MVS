@@ -30,6 +30,8 @@ echo "   - Config: $CONFIG"
 echo "   - Stage: stage_a"
 echo "   - Mode: point_refine"
 echo "   - Work Dir: $WORK_DIR"
+echo "   - Depth Prior: depth-anything/da3metric-large"
+echo "   - Note: first run may download weights from Hugging Face"
 echo ""
 
 torchrun --nproc_per_node=1 train.py \

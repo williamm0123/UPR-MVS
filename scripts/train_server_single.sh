@@ -36,7 +36,8 @@ echo "   - Stage A: point_refine"
 echo "   - Stage B: joint (enable densify)"
 echo "   - Image Size: 756x1008"
 echo "   - Views: 5"
-echo "   - Depth Prior: DA3METRIC-LARGE"
+echo "   - Depth Prior: depth-anything/da3metric-large"
+echo "   - Note: first run may download weights from Hugging Face"
 echo ""
 
 # Start training with single-run curriculum execution
